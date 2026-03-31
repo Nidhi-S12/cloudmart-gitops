@@ -31,3 +31,5 @@ images:
 # Apply environment-specific patches from the patches/ folder
 patches:
   - path: patches/frontend-nodeport.yaml
+  - path: patches/api-gateway-nodeport.yaml
+  - path: patches/frontend-env.yaml
