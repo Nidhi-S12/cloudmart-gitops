@@ -1,0 +1,13 @@
+# Local Terraform state — never commit, use S3 backend instead
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Variable files containing secrets
+terraform.tfvars
+*.tfvars
+
+# Crash logs
+crash.log
+crash.*.log
