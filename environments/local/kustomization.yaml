@@ -33,3 +33,4 @@ patches:
   - path: patches/frontend-nodeport.yaml
   - path: patches/api-gateway-nodeport.yaml
   - path: patches/frontend-env.yaml
+  - path: patches/image-pull-policy.yaml
