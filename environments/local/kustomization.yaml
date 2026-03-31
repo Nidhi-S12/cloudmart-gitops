@@ -2,7 +2,10 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Pull in all 4 base service manifests
+namespace: cloudmart
+
 resources:
+  - namespace.yaml
   - ../../base/product-service
   - ../../base/order-service
   - ../../base/api-gateway
