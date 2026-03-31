@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Pull in all 4 base service manifests
+resources:
+  - ../../base/product-service
+  - ../../base/order-service
+  - ../../base/api-gateway
+  - ../../base/frontend
+
+# Kustomize will add these labels to every resource it generates
+commonLabels:
+  environment: local
+
+# Override the image tags to use our locally built images
+# Kustomize replaces the image field in every Deployment that matches the name
+images:
+  - name: cloudmart/product-service
+    newTag: local
+  - name: cloudmart/order-service
+    newTag: local
+  - name: cloudmart/api-gateway
+    newTag: local
+  - name: cloudmart/frontend
+    newTag: local
+
+# Apply environment-specific patches from the patches/ folder
+patches:
+  - path: patches/frontend-nodeport.yaml

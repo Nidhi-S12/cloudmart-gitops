@@ -1,0 +1,13 @@
+# Patch: change the frontend Service from ClusterIP to NodePort
+# so we can access it from the browser on localhost:30000
+# ClusterIP is only reachable inside the cluster — NodePort punches a hole on the node
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+spec:
+  type: NodePort
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30000    # browser hits localhost:30000
