@@ -9,4 +9,4 @@ spec:
         - name: frontend
           env:
             - name: NEXT_PUBLIC_API_URL
-              value: "http://localhost:30001"  # browser hits api-gateway NodePort
+              value: "http://localhost:30080"  # browser hits Traefik, routes /api → api-gateway

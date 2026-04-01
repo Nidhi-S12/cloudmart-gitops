@@ -1,0 +1,21 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: cloudmart
+spec:
+  entryPoints:
+    - web
+  routes:
+    # API routes — must come first (more specific paths)
+    - match: PathPrefix(`/api`)
+      kind: Rule
+      services:
+        - name: api-gateway
+          port: 3000
+
+    # Frontend — catch-all
+    - match: PathPrefix(`/`)
+      kind: Rule
+      services:
+        - name: frontend
+          port: 3000
