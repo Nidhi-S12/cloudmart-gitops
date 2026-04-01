@@ -16,6 +16,9 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
       containers:
         - name: product-service
           image: cloudmart/product-service:latest  # overridden by kustomize overlay

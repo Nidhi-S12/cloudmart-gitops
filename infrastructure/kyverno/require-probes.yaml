@@ -1,0 +1,35 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-probes
+  annotations:
+    policies.kyverno.io/title: Require Liveness and Readiness Probes
+    policies.kyverno.io/description: >-
+      All containers must define liveness and readiness probes. Without them,
+      Kubernetes cannot detect when a container is unhealthy or not yet ready
+      to serve traffic.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-probes
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - cloudmart
+      validate:
+        message: "All containers must define both livenessProbe and readinessProbe."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.livenessProbe || '' }}"
+                    operator: Equals
+                    value: ""
+                  - key: "{{ element.readinessProbe || '' }}"
+                    operator: Equals
+                    value: ""

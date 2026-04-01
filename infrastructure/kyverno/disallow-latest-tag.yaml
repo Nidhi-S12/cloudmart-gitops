@@ -1,0 +1,35 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow Latest Tag
+    policies.kyverno.io/description: >-
+      Using 'latest' image tag is non-deterministic — the image pulled today
+      may differ from tomorrow. Production deployments must pin to a specific
+      immutable tag (e.g. sha-abc1234) for reproducibility and rollback safety.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - cloudmart
+      validate:
+        message: "Images must not use 'latest' tag. Pin to a specific immutable tag (e.g. sha-abc1234)."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: Equals
+                    value: "*:latest"
+                  - key: "{{ element.image }}"
+                    operator: NotEquals
+                    value: "*:*"

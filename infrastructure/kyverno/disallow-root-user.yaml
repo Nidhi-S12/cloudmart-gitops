@@ -1,0 +1,28 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-root-user
+  annotations:
+    policies.kyverno.io/title: Disallow Root User
+    policies.kyverno.io/description: >-
+      Containers must not run as root (UID 0). Running as root inside a container
+      means an attacker who escapes the container has root on the host.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-runasnonroot
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - cloudmart
+      validate:
+        message: "Containers must not run as root. Set securityContext.runAsNonRoot=true or securityContext.runAsUser to a non-zero UID."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  runAsNonRoot: "true"
