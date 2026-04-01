@@ -16,21 +16,23 @@ labels:
       environment: local
     includeSelectors: false
 
-# Override the image tags to use our locally built images
-# Kustomize replaces the image field in every Deployment that matches the name
+# Override images to pull from GHCR
 images:
   - name: cloudmart/product-service
-    newTag: local
+    newName: ghcr.io/nidhi-s12/cloudmart/product-service
+    newTag: latest
   - name: cloudmart/order-service
-    newTag: local
+    newName: ghcr.io/nidhi-s12/cloudmart/order-service
+    newTag: latest
   - name: cloudmart/api-gateway
-    newTag: local
+    newName: ghcr.io/nidhi-s12/cloudmart/api-gateway
+    newTag: latest
   - name: cloudmart/frontend
-    newTag: local
+    newName: ghcr.io/nidhi-s12/cloudmart/frontend
+    newTag: latest
 
 # Apply environment-specific patches from the patches/ folder
 patches:
   - path: patches/frontend-nodeport.yaml
   - path: patches/api-gateway-nodeport.yaml
   - path: patches/frontend-env.yaml
-  - path: patches/image-pull-policy.yaml
