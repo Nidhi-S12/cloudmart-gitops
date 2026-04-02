@@ -33,3 +33,4 @@ images:
 
 patches:
   - path: patches/frontend-env.yaml
+  - path: patches/product-service-env.yaml
