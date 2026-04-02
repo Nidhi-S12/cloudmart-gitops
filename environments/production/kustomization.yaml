@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cloudmart
+
+resources:
+  - namespace.yaml
+  - ../../base/product-service
+  - ../../base/order-service
+  - ../../base/api-gateway
+  - ../../base/frontend
+  - ../../base/ingress
+
+labels:
+  - pairs:
+      environment: production
+    includeSelectors: false
+
+# Pull from GHCR — same as local but will use sha tags once CI is updated
+images:
+  - name: cloudmart/product-service
+    newName: ghcr.io/nidhi-s12/cloudmart/product-service
+    newTag: latest
+  - name: cloudmart/order-service
+    newName: ghcr.io/nidhi-s12/cloudmart/order-service
+    newTag: latest
+  - name: cloudmart/api-gateway
+    newName: ghcr.io/nidhi-s12/cloudmart/api-gateway
+    newTag: latest
+  - name: cloudmart/frontend
+    newName: ghcr.io/nidhi-s12/cloudmart/frontend
+    newTag: latest
+
+patches:
+  - path: patches/frontend-env.yaml
