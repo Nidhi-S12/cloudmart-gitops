@@ -2,7 +2,7 @@
 # Save them — you'll need them to configure kubectl and app secrets
 
 output "eks_cluster_name" {
-  description = "Run: aws eks update-kubeconfig --name <value> --region us-east-1"
+  description = "Run: aws eks update-kubeconfig --name <value> --region eu-west-1"
   value       = module.eks.cluster_name
 }
 

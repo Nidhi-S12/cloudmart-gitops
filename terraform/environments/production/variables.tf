@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region to deploy all resources"
   type        = string
-  default     = "us-east-1"
+  default     = "eu-west-1"
 }
 
 variable "project_name" {
@@ -19,14 +19,14 @@ variable "environment" {
 variable "availability_zones" {
   description = "AZs to spread subnets across (must be in the selected region)"
   type        = list(string)
-  default     = ["us-east-1a", "us-east-1b"]
+  default     = ["eu-west-1a", "eu-west-1b"]
 }
 
 # EKS
 variable "kubernetes_version" {
   description = "Kubernetes version"
   type        = string
-  default     = "1.29"
+  default     = "1.31"
 }
 
 variable "node_instance_type" {

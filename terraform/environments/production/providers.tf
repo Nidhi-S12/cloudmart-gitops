@@ -17,17 +17,17 @@ terraform {
   # DynamoDB table provides locking so concurrent applies don't corrupt state
   #
   # BEFORE FIRST APPLY: create these manually (one-time bootstrap):
-  #   aws s3api create-bucket --bucket cloudmart-tfstate-<your-account-id> --region us-east-1
+  #   aws s3api create-bucket --bucket cloudmart-tfstate-<your-account-id> --region eu-west-1
   #   aws dynamodb create-table \
   #     --table-name cloudmart-tfstate-lock \
   #     --attribute-definitions AttributeName=LockID,AttributeType=S \
   #     --key-schema AttributeName=LockID,KeyType=HASH \
   #     --billing-mode PAY_PER_REQUEST \
-  #     --region us-east-1
+  #     --region eu-west-1
   backend "s3" {
-    bucket         = "cloudmart-tfstate"   # update with your account ID suffix
+    bucket         = "cloudmart-tfstate-529088262693"
     key            = "production/terraform.tfstate"
-    region         = "us-east-1"
+    region         = "eu-west-1"
     dynamodb_table = "cloudmart-tfstate-lock"
     encrypt        = true
   }
