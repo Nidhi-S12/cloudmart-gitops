@@ -11,6 +11,7 @@ resources:
   - ../../base/frontend
   - ../../base/ingress
   - ../../base/kafka
+  - ../../base/external-secrets
 
 labels:
   - pairs:
