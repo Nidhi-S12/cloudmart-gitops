@@ -10,3 +10,5 @@ spec:
           env:
             - name: NEXT_PUBLIC_API_URL
               value: "https://tulunad.click"
+            - name: NEXTAUTH_URL
+              value: "https://tulunad.click"

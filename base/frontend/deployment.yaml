@@ -30,6 +30,9 @@ spec:
               value: "http://api-gateway:3000"
             - name: NEXT_PUBLIC_API_URL
               value: "http://localhost"       # overridden per environment by kustomize
+          envFrom:
+            - secretRef:
+                name: frontend-oauth-secret
           resources:
             requests:
               memory: "128Mi"
