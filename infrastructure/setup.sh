@@ -1,12 +1,27 @@
 #!/bin/bash
 # CloudMart Infrastructure Setup Script
 # Run this after terraform apply and kubeconfig update to install all platform components
+#
+# Usage:
+#   cd infrastructure/
+#   ./setup.sh
+#
+# Prerequisites:
+#   - kubectl configured for the new cluster
+#   - AWS CLI configured (same account as the cluster)
+#   - helm installed
 
 set -e
 
 echo "=== CloudMart Infrastructure Setup ==="
 
-# Add Helm repos
+REGION="eu-west-1"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+CLUSTER_NAME="cloudmart-production"
+HOSTED_ZONE_ID="Z1019724D4PF6ZINX13C"
+ELB_ZONE="Z32O12XQLNTSW2"
+
+# ── Helm repos ────────────────────────────────────────────────────────────────
 echo "Adding Helm repositories..."
 helm repo add traefik https://traefik.github.io/charts
 helm repo add strimzi https://strimzi.io/charts/
@@ -15,74 +30,215 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo add grafana https://grafana.github.io/helm-charts
 helm repo add kyverno https://kyverno.github.io/kyverno/
 helm repo add jetstack https://charts.jetstack.io
+helm repo add external-secrets https://charts.external-secrets.io
 helm repo update
 
-# Create namespaces
+# ── Namespaces ────────────────────────────────────────────────────────────────
 echo "Creating namespaces..."
-kubectl create namespace cloudmart --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace kyverno --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
+for ns in cloudmart argocd monitoring kyverno cert-manager; do
+  kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -
+done
 
-# Install Traefik (ingress controller)
+# ── Traefik ───────────────────────────────────────────────────────────────────
 echo "Installing Traefik..."
 helm upgrade --install traefik traefik/traefik -n cloudmart \
   -f traefik/values.yaml
 
-# Install Strimzi Kafka Operator
+# ── Strimzi Kafka Operator ────────────────────────────────────────────────────
 echo "Installing Strimzi Kafka Operator..."
 helm upgrade --install strimzi strimzi/strimzi-kafka-operator -n cloudmart \
   -f kafka/values.yaml
 
-# Install ArgoCD
+# ── ArgoCD ────────────────────────────────────────────────────────────────────
 echo "Installing ArgoCD..."
 helm upgrade --install argocd argo/argo-cd -n argocd \
-  --set server.service.type=LoadBalancer
+  --set 'configs.params.server\.insecure=true' \
+  --set server.service.type=ClusterIP \
+  --disable-openapi-validation
 
-# Install Prometheus + Grafana
+# ── Prometheus + Grafana ──────────────────────────────────────────────────────
 echo "Installing Prometheus + Grafana..."
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   -n monitoring -f monitoring/prometheus-values.yaml
 
-# Install Loki
+# ── Loki ──────────────────────────────────────────────────────────────────────
 echo "Installing Loki..."
 helm upgrade --install loki grafana/loki -n monitoring \
   -f monitoring/loki-values.yaml
 
-# Install Kyverno
+# ── Kyverno ───────────────────────────────────────────────────────────────────
 echo "Installing Kyverno..."
 helm upgrade --install kyverno kyverno/kyverno -n kyverno --version 3.2.6
 
-# Apply Kyverno policies
 echo "Applying Kyverno policies..."
 kubectl apply -f kyverno/
 
-# Install Cert-Manager
+# ── Cert-Manager ──────────────────────────────────────────────────────────────
 echo "Installing Cert-Manager..."
 helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager \
   --set crds.enabled=true
 
-# Apply Cert-Manager resources
+# ── IRSA: cert-manager → Route 53 ────────────────────────────────────────────
+echo "Setting up IRSA for cert-manager..."
+OIDC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
+  --query "cluster.identity.oidc.issuer" --output text | cut -d'/' -f5)
+
+# Create/update trust policy (idempotent)
+TRUST_POLICY=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}:sub": "system:serviceaccount:cert-manager:cert-manager",
+        "oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
+EOF
+)
+aws iam update-assume-role-policy \
+  --role-name cert-manager-route53 \
+  --policy-document "$TRUST_POLICY" 2>/dev/null || \
+aws iam create-role \
+  --role-name cert-manager-route53 \
+  --assume-role-policy-document "$TRUST_POLICY"
+
+aws iam put-role-policy \
+  --role-name cert-manager-route53 \
+  --policy-name Route53DNS01 \
+  --policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Effect\": \"Allow\",
+      \"Action\": [\"route53:GetChange\",\"route53:ChangeResourceRecordSets\",\"route53:ListResourceRecordSets\"],
+      \"Resource\": [\"arn:aws:route53:::hostedzone/${HOSTED_ZONE_ID}\",\"arn:aws:route53:::change/*\"]
+    },{
+      \"Effect\": \"Allow\",
+      \"Action\": \"route53:ListHostedZonesByName\",
+      \"Resource\": \"*\"
+    }]
+  }"
+
+kubectl annotate serviceaccount cert-manager -n cert-manager \
+  eks.amazonaws.com/role-arn=arn:aws:iam::${ACCOUNT_ID}:role/cert-manager-route53 \
+  --overwrite
+
+kubectl rollout restart deployment cert-manager -n cert-manager
+kubectl rollout status deployment cert-manager -n cert-manager --timeout=60s
+
+# ── IRSA: external-secrets → Secrets Manager ──────────────────────────────────
+echo "Setting up IRSA for external-secrets..."
+ESO_TRUST_POLICY=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}:sub": "system:serviceaccount:cloudmart:external-secrets",
+        "oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
+EOF
+)
+aws iam update-assume-role-policy \
+  --role-name cloudmart-external-secrets \
+  --policy-document "$ESO_TRUST_POLICY" 2>/dev/null || \
+aws iam create-role \
+  --role-name cloudmart-external-secrets \
+  --assume-role-policy-document "$ESO_TRUST_POLICY"
+
+aws iam put-role-policy \
+  --role-name cloudmart-external-secrets \
+  --policy-name SecretsManagerRead \
+  --policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Effect\": \"Allow\",
+      \"Action\": [\"secretsmanager:GetSecretValue\",\"secretsmanager:DescribeSecret\"],
+      \"Resource\": \"arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:cloudmart/*\"
+    }]
+  }"
+
+# ── External Secrets Operator ─────────────────────────────────────────────────
+echo "Installing External Secrets Operator..."
+helm upgrade --install external-secrets external-secrets/external-secrets \
+  -n cloudmart \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="arn:aws:iam::${ACCOUNT_ID}:role/cloudmart-external-secrets" \
+  --set serviceAccount.name=external-secrets
+
+# ── cert-manager resources ────────────────────────────────────────────────────
 echo "Applying ClusterIssuer and Certificate..."
 kubectl apply -f cert-manager/cluster-issuer.yaml
 kubectl apply -f cert-manager/certificate.yaml
 
-# Apply Kafka cluster
+# ── Kafka cluster ──────────────────────────────────────────────────────────────
+echo "Waiting for Strimzi operator to be ready..."
+kubectl rollout status deployment strimzi-cluster-operator -n cloudmart --timeout=120s
 echo "Deploying Kafka cluster..."
 kubectl apply -f ../base/kafka/kafka.yaml -n cloudmart
 
-# Apply ArgoCD App-of-Apps
+# ── DNS records ───────────────────────────────────────────────────────────────
+echo "Waiting for Traefik LoadBalancer IP..."
+for i in $(seq 1 30); do
+  LB=$(kubectl get svc traefik -n cloudmart -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+  if [ -n "$LB" ]; then break; fi
+  sleep 10
+done
+
+if [ -z "$LB" ]; then
+  echo "ERROR: Traefik LB not ready after 5 minutes"
+  exit 1
+fi
+
+echo "Updating DNS records → $LB"
+aws route53 change-resource-record-sets \
+  --hosted-zone-id $HOSTED_ZONE_ID \
+  --change-batch "{
+    \"Changes\": [
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"argocd.tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"grafana.tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"traefik.tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}}
+    ]
+  }"
+
+# ── IngressRoutes ─────────────────────────────────────────────────────────────
+echo "Applying IngressRoutes..."
+kubectl apply -f ../base/ingress/ -n cloudmart --recursive=false \
+  --selector='!kustomize.config.k8s.io/v1beta1'
+kubectl apply -f ingress/subdomain-ingressroutes.yaml
+
+# ── ArgoCD App-of-Apps ────────────────────────────────────────────────────────
 echo "Deploying ArgoCD App-of-Apps..."
 kubectl apply -f ../argocd/apps/cloudmart-app-of-apps.yaml -n argocd
 
 echo ""
 echo "=== Setup Complete ==="
 echo ""
-echo "ArgoCD password:"
-echo "  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo"
+echo "ArgoCD:  https://argocd.tulunad.click"
+echo "  user:  admin"
+echo "  pass:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo"
 echo ""
-echo "Grafana password: cloudmart123"
+echo "Grafana: https://grafana.tulunad.click"
+echo "  user:  admin"
+echo "  pass:  cloudmart123"
 echo ""
-echo "Note: You still need to create secrets in the cloudmart namespace."
-echo "See environments/production/ for details."
+echo "App:     https://tulunad.click"
+echo ""
+echo "NOTE: TLS cert takes ~5 min to issue. ArgoCD will sync and deploy all services."
+echo "NOTE: Kafka takes ~3 min. order-service will restart until it's ready — this is normal."
+echo "NOTE: Secrets are in AWS Secrets Manager — ESO will sync them automatically."
