@@ -19,6 +19,8 @@ module "eks" {
   environment        = var.environment
   kubernetes_version = var.kubernetes_version
   node_instance_type = var.node_instance_type
+  node_min_size      = var.node_min_size
+  node_max_size      = var.node_max_size
   node_desired_size  = var.node_desired_size
 
   # These come from the VPC module output

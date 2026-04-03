@@ -132,6 +132,7 @@ kubectl annotate serviceaccount cert-manager -n cert-manager \
 
 kubectl rollout restart deployment cert-manager -n cert-manager
 kubectl rollout status deployment cert-manager -n cert-manager --timeout=60s
+kubectl rollout status deployment cert-manager-webhook -n cert-manager --timeout=60s
 
 # ── IRSA: external-secrets → Secrets Manager ──────────────────────────────────
 echo "Setting up IRSA for external-secrets..."
@@ -218,8 +219,9 @@ aws route53 change-resource-record-sets \
 
 # ── IngressRoutes ─────────────────────────────────────────────────────────────
 echo "Applying IngressRoutes..."
-kubectl apply -f ../base/ingress/ -n cloudmart --recursive=false \
-  --selector='!kustomize.config.k8s.io/v1beta1'
+kubectl apply -f ../base/ingress/ingressroute.yaml -n cloudmart
+kubectl apply -f ../base/ingress/ingressroute-tls.yaml -n cloudmart
+kubectl apply -f ../base/ingress/redirect-middleware.yaml -n cloudmart
 kubectl apply -f ingress/subdomain-ingressroutes.yaml
 
 # ── ArgoCD App-of-Apps ────────────────────────────────────────────────────────

@@ -19,6 +19,8 @@ loki:
 
 singleBinary:
   replicas: 1
+  persistence:
+    storageClass: gp2
   resources:
     requests:
       memory: 128Mi
