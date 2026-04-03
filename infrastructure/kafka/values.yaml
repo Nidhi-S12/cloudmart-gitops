@@ -1,0 +1,4 @@
+# Strimzi Kafka Operator Helm values
+# Install: helm install strimzi strimzi/strimzi-kafka-operator -n cloudmart -f values.yaml
+watchNamespaces:
+  - cloudmart

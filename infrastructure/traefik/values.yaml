@@ -1,0 +1,14 @@
+service:
+  type: LoadBalancer
+
+ingressRoute:
+  dashboard:
+    enabled: false
+
+api:
+  dashboard: true
+  insecure: true
+
+providers:
+  kubernetesCRD:
+    allowCrossNamespace: true

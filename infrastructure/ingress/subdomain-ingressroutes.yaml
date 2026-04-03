@@ -1,0 +1,52 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: argocd-tls
+  namespace: cloudmart
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`argocd.tulunad.click`)
+      kind: Rule
+      services:
+        - name: argocd-server
+          namespace: argocd
+          port: 80
+  tls:
+    secretName: tulunad-click-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: grafana-tls
+  namespace: cloudmart
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`grafana.tulunad.click`)
+      kind: Rule
+      services:
+        - name: kube-prometheus-stack-grafana
+          namespace: monitoring
+          port: 80
+  tls:
+    secretName: tulunad-click-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: traefik-dashboard-tls
+  namespace: cloudmart
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`traefik.tulunad.click`)
+      kind: Rule
+      services:
+        - name: api@internal
+          kind: TraefikService
+  tls:
+    secretName: tulunad-click-tls
