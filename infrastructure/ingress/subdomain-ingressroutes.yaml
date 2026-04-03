@@ -1,6 +1,23 @@
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
+  name: subdomains-http-redirect
+  namespace: cloudmart
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`argocd.tulunad.click`) || Host(`grafana.tulunad.click`) || Host(`traefik.tulunad.click`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: frontend
+          port: 3000
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
   name: argocd-tls
   namespace: cloudmart
 spec:
