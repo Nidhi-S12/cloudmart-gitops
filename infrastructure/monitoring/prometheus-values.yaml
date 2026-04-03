@@ -7,6 +7,12 @@ grafana:
   grafana.ini:
     server:
       root_url: https://grafana.tulunad.click
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      url: http://loki-gateway.monitoring.svc.cluster.local
+      access: proxy
+      isDefault: false
   resources:
     requests:
       memory: 128Mi

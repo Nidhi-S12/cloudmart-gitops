@@ -21,6 +21,17 @@ CLUSTER_NAME="cloudmart-production"
 HOSTED_ZONE_ID="Z1019724D4PF6ZINX13C"
 ELB_ZONE="Z32O12XQLNTSW2"
 
+# ── Pre-flight: verify required AWS Secrets exist ─────────────────────────────
+echo "Verifying required AWS Secrets Manager entries..."
+for secret in cloudmart/product-service cloudmart/order-service cloudmart/ghcr-pull; do
+  aws secretsmanager describe-secret --secret-id "$secret" --region "$REGION" > /dev/null 2>&1 || {
+    echo "ERROR: Secret '$secret' not found in AWS Secrets Manager."
+    echo "Create it manually before running setup.sh, then re-run."
+    exit 1
+  }
+done
+echo "All required secrets verified."
+
 # ── Helm repos ────────────────────────────────────────────────────────────────
 echo "Adding Helm repositories..."
 helm repo add traefik https://traefik.github.io/charts
@@ -126,13 +137,17 @@ aws iam put-role-policy \
     }]
   }"
 
+echo "Waiting for cert-manager to be ready..."
+kubectl rollout status deployment cert-manager -n cert-manager --timeout=120s
+kubectl rollout status deployment cert-manager-cainjector -n cert-manager --timeout=120s
+kubectl rollout status deployment cert-manager-webhook -n cert-manager --timeout=120s
+
 kubectl annotate serviceaccount cert-manager -n cert-manager \
   eks.amazonaws.com/role-arn=arn:aws:iam::${ACCOUNT_ID}:role/cert-manager-route53 \
   --overwrite
 
 kubectl rollout restart deployment cert-manager -n cert-manager
 kubectl rollout status deployment cert-manager -n cert-manager --timeout=60s
-kubectl rollout status deployment cert-manager-webhook -n cert-manager --timeout=60s
 
 # ── IRSA: external-secrets → Secrets Manager ──────────────────────────────────
 echo "Setting up IRSA for external-secrets..."
@@ -181,27 +196,37 @@ helm upgrade --install external-secrets external-secrets/external-secrets \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="arn:aws:iam::${ACCOUNT_ID}:role/cloudmart-external-secrets" \
   --set serviceAccount.name=external-secrets
 
+echo "Waiting for External Secrets Operator to be ready..."
+kubectl rollout status deployment external-secrets -n cloudmart --timeout=120s
+kubectl rollout status deployment external-secrets-webhook -n cloudmart --timeout=120s
+kubectl rollout status deployment external-secrets-cert-controller -n cloudmart --timeout=60s
+
 # ── cert-manager resources ────────────────────────────────────────────────────
 echo "Applying ClusterIssuer and Certificate..."
 kubectl apply -f cert-manager/cluster-issuer.yaml
+kubectl wait --for=condition=Ready clusterissuer/letsencrypt-prod --timeout=60s
 kubectl apply -f cert-manager/certificate.yaml
 
 # ── Kafka cluster ──────────────────────────────────────────────────────────────
-echo "Waiting for Strimzi operator to be ready..."
+echo "Waiting for Strimzi operator and CRDs to be ready..."
 kubectl rollout status deployment strimzi-cluster-operator -n cloudmart --timeout=120s
+kubectl wait --for=condition=Established crd/kafkas.kafka.strimzi.io --timeout=60s
+kubectl wait --for=condition=Established crd/kafkanodepools.kafka.strimzi.io --timeout=60s
+
 echo "Deploying Kafka cluster..."
 kubectl apply -f ../base/kafka/kafka.yaml -n cloudmart
 
 # ── DNS records ───────────────────────────────────────────────────────────────
-echo "Waiting for Traefik LoadBalancer IP..."
-for i in $(seq 1 30); do
+echo "Waiting for Traefik LoadBalancer hostname..."
+for i in $(seq 1 36); do
   LB=$(kubectl get svc traefik -n cloudmart -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
   if [ -n "$LB" ]; then break; fi
+  echo "  ($i/36) LB not ready yet, waiting..."
   sleep 10
 done
 
 if [ -z "$LB" ]; then
-  echo "ERROR: Traefik LB not ready after 5 minutes"
+  echo "ERROR: Traefik LB not ready after 6 minutes"
   exit 1
 fi
 
@@ -224,6 +249,10 @@ kubectl apply -f ../base/ingress/ingressroute-tls.yaml -n cloudmart
 kubectl apply -f ../base/ingress/redirect-middleware.yaml -n cloudmart
 kubectl apply -f ingress/subdomain-ingressroutes.yaml
 
+# ── Wait for ArgoCD server before applying App-of-Apps ───────────────────────
+echo "Waiting for ArgoCD server to be ready..."
+kubectl rollout status deployment argocd-server -n argocd --timeout=180s
+
 # ── ArgoCD App-of-Apps ────────────────────────────────────────────────────────
 echo "Deploying ArgoCD App-of-Apps..."
 kubectl apply -f ../argocd/apps/cloudmart-app-of-apps.yaml -n argocd
@@ -233,7 +262,7 @@ echo "=== Setup Complete ==="
 echo ""
 echo "ArgoCD:  https://argocd.tulunad.click"
 echo "  user:  admin"
-echo "  pass:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo"
+echo "  pass:  $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
 echo ""
 echo "Grafana: https://grafana.tulunad.click"
 echo "  user:  admin"
@@ -241,6 +270,7 @@ echo "  pass:  cloudmart123"
 echo ""
 echo "App:     https://tulunad.click"
 echo ""
-echo "NOTE: TLS cert takes ~5 min to issue. ArgoCD will sync and deploy all services."
+echo "NOTE: TLS cert takes ~5 min to issue (DNS-01 challenge via Route53)."
+echo "NOTE: ArgoCD will sync and deploy all app services automatically."
 echo "NOTE: Kafka takes ~3 min. order-service will restart until it's ready — this is normal."
-echo "NOTE: Secrets are in AWS Secrets Manager — ESO will sync them automatically."
+echo "NOTE: AWS Secrets Manager → ESO will sync secrets into the cluster automatically."
