@@ -4,6 +4,9 @@
 grafana:
   enabled: true
   adminPassword: cloudmart123
+  grafana.ini:
+    server:
+      root_url: https://grafana.tulunad.click
   resources:
     requests:
       memory: 128Mi
