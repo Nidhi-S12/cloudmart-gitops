@@ -4,35 +4,34 @@ kind: Kustomization
 namespace: cloudmart
 
 resources:
-  - namespace.yaml
-  - ../../base/product-service
-  - ../../base/order-service
-  - ../../base/api-gateway
-  - ../../base/frontend
-  - ../../base/ingress
-  - ../../base/kafka
-  - ../../base/external-secrets
+- namespace.yaml
+- ../../base/product-service
+- ../../base/order-service
+- ../../base/api-gateway
+- ../../base/frontend
+- ../../base/ingress
+- ../../base/kafka
+- ../../base/external-secrets
 
 labels:
-  - pairs:
-      environment: production
-    includeSelectors: false
+- pairs:
+    environment: production
 
 # Pull from GHCR — same as local but will use sha tags once CI is updated
 images:
-  - name: cloudmart/product-service
-    newName: ghcr.io/nidhi-s12/cloudmart/product-service
-    newTag: latest
-  - name: cloudmart/order-service
-    newName: ghcr.io/nidhi-s12/cloudmart/order-service
-    newTag: latest
-  - name: cloudmart/api-gateway
-    newName: ghcr.io/nidhi-s12/cloudmart/api-gateway
-    newTag: latest
-  - name: cloudmart/frontend
-    newName: ghcr.io/nidhi-s12/cloudmart/frontend
-    newTag: latest
+- name: cloudmart/api-gateway
+  newName: ghcr.io/nidhi-s12/cloudmart/api-gateway
+  newTag: latest
+- name: cloudmart/frontend
+  newName: ghcr.io/nidhi-s12/cloudmart/frontend
+  newTag: latest
+- name: cloudmart/order-service
+  newName: ghcr.io/nidhi-s12/cloudmart/order-service
+  newTag: latest
+- name: cloudmart/product-service
+  newName: ghcr.io/nidhi-s12/cloudmart/product-service
+  newTag: sha-005c6cb
 
 patches:
-  - path: patches/frontend-env.yaml
-  - path: patches/product-service-env.yaml
+- path: patches/frontend-env.yaml
+- path: patches/product-service-env.yaml
