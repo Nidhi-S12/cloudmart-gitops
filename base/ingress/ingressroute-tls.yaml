@@ -6,8 +6,16 @@ spec:
   entryPoints:
     - websecure
   routes:
+    - match: Host(`tulunad.click`) && PathPrefix(`/api/auth`)
+      kind: Rule
+      priority: 20
+      services:
+        - name: frontend
+          port: 3000
+
     - match: Host(`tulunad.click`) && PathPrefix(`/api`)
       kind: Rule
+      priority: 10
       services:
         - name: api-gateway
           port: 3000
