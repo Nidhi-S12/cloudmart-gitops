@@ -257,6 +257,14 @@ kubectl rollout status deployment argocd-server -n argocd --timeout=180s
 echo "Deploying ArgoCD App-of-Apps..."
 kubectl apply -f ../argocd/apps/cloudmart-app-of-apps.yaml -n argocd
 
+# ── Seed database ─────────────────────────────────────────────────────────────
+echo "Waiting for product-service pod to be ready..."
+kubectl rollout status deployment product-service -n cloudmart --timeout=300s
+
+echo "Seeding database with products..."
+PRODUCT_POD=$(kubectl get pod -n cloudmart -l app=product-service -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n cloudmart "$PRODUCT_POD" -- python seed.py
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
