@@ -21,7 +21,7 @@ labels:
 images:
 - name: cloudmart/api-gateway
   newName: ghcr.io/nidhi-s12/cloudmart/api-gateway
-  newTag: sha-0065f0d
+  newTag: sha-ce74324
 - name: cloudmart/frontend
   newName: ghcr.io/nidhi-s12/cloudmart/frontend
   newTag: sha-9f5d099
