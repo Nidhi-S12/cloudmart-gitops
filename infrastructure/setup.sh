@@ -15,11 +15,11 @@ set -e
 
 echo "=== CloudMart Infrastructure Setup ==="
 
-REGION="eu-west-1"
+REGION="us-east-1"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 CLUSTER_NAME="cloudmart-production"
 HOSTED_ZONE_ID="Z1019724D4PF6ZINX13C"
-ELB_ZONE="Z32O12XQLNTSW2"
+ELB_ZONE="Z35SXDOTRQ7X7K"
 
 # ── Pre-flight: verify required AWS Secrets exist ─────────────────────────────
 echo "Verifying required AWS Secrets Manager entries..."
