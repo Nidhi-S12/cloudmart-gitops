@@ -42,7 +42,9 @@ helm repo add grafana https://grafana.github.io/helm-charts
 helm repo add kyverno https://kyverno.github.io/kyverno/
 helm repo add jetstack https://charts.jetstack.io
 helm repo add external-secrets https://charts.external-secrets.io
-helm repo update
+for i in 1 2 3; do
+  helm repo update && break || { echo "Helm repo update failed (attempt $i/3), retrying in 10s..."; sleep 10; }
+done
 
 # ── Namespaces ────────────────────────────────────────────────────────────────
 echo "Creating namespaces..."
