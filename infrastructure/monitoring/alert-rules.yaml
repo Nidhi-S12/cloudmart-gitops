@@ -1,0 +1,112 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cloudmart-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # ── Pod health ────────────────────────────────────────────────────────────
+    - name: cloudmart.pods
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{namespace="cloudmart"}[15m]) * 60 > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} is crash looping"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} has restarted more than once in the last 15 minutes."
+
+        - alert: PodNotReady
+          expr: |
+            kube_pod_status_ready{namespace="cloudmart", condition="true"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.pod }} is not ready"
+            description: "Pod {{ $labels.pod }} has been in a non-ready state for more than 5 minutes."
+
+        - alert: DeploymentReplicasMismatch
+          expr: |
+            kube_deployment_spec_replicas{namespace="cloudmart"}
+              != kube_deployment_status_replicas_available{namespace="cloudmart"}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment {{ $labels.deployment }} has unavailable replicas"
+            description: "Deployment {{ $labels.deployment }} has {{ $value }} desired replicas but not all are available."
+
+    # ── Resource usage ────────────────────────────────────────────────────────
+    - name: cloudmart.resources
+      rules:
+        - alert: HighCPUUsage
+          expr: |
+            (
+              sum(rate(container_cpu_usage_seconds_total{namespace="cloudmart", container!=""}[5m])) by (pod, container)
+              /
+              sum(kube_pod_container_resource_limits{namespace="cloudmart", resource="cpu"}) by (pod, container)
+            ) * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High CPU on {{ $labels.pod }}"
+            description: "Container {{ $labels.container }} in {{ $labels.pod }} is using {{ printf \"%.0f\" $value }}% of its CPU limit."
+
+        - alert: HighMemoryUsage
+          expr: |
+            (
+              sum(container_memory_working_set_bytes{namespace="cloudmart", container!=""}) by (pod, container)
+              /
+              sum(kube_pod_container_resource_limits{namespace="cloudmart", resource="memory"}) by (pod, container)
+            ) * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High memory on {{ $labels.pod }}"
+            description: "Container {{ $labels.container }} in {{ $labels.pod }} is using {{ printf \"%.0f\" $value }}% of its memory limit."
+
+    # ── HPA ───────────────────────────────────────────────────────────────────
+    - name: cloudmart.hpa
+      rules:
+        - alert: HPAAtMaxReplicas
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="cloudmart"}
+              == kube_horizontalpodautoscaler_spec_max_replicas{namespace="cloudmart"}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HPA {{ $labels.horizontalpodautoscaler }} is at max replicas"
+            description: "HPA {{ $labels.horizontalpodautoscaler }} has been at its maximum replica count for 10 minutes. Consider increasing maxReplicas."
+
+        - alert: HPAScaledDown
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="cloudmart"} == 1
+              and
+            kube_horizontalpodautoscaler_status_desired_replicas{namespace="cloudmart"} > 1
+          for: 2m
+          labels:
+            severity: info
+          annotations:
+            summary: "HPA {{ $labels.horizontalpodautoscaler }} is scaling down"
+            description: "HPA {{ $labels.horizontalpodautoscaler }} is scaling down to 1 replica."
+
+    # ── Kafka ─────────────────────────────────────────────────────────────────
+    - name: cloudmart.kafka
+      rules:
+        - alert: KafkaPodDown
+          expr: |
+            kube_pod_status_ready{namespace="cloudmart", pod=~"kafka-.*", condition="true"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Kafka pod {{ $labels.pod }} is down"
+            description: "Kafka pod {{ $labels.pod }} has been not ready for 2 minutes. order-service may be affected."

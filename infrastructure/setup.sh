@@ -81,6 +81,9 @@ echo "Installing Prometheus + Grafana..."
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   -n monitoring -f monitoring/prometheus-values.yaml
 
+echo "Applying CloudMart alert rules..."
+kubectl apply -f monitoring/alert-rules.yaml
+
 # ── Loki ──────────────────────────────────────────────────────────────────────
 echo "Installing Loki..."
 helm upgrade --install loki grafana/loki -n monitoring \
