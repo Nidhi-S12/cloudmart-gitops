@@ -267,6 +267,15 @@ echo "Deploying ArgoCD App-of-Apps..."
 kubectl apply -f ../argocd/apps/cloudmart-app-of-apps.yaml -n argocd
 
 # ── Seed database ─────────────────────────────────────────────────────────────
+echo "Waiting for ArgoCD to sync and deploy services..."
+for i in $(seq 1 60); do
+  STATUS=$(kubectl get application cloudmart-production -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null)
+  HEALTH=$(kubectl get application cloudmart-production -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null)
+  if [ "$STATUS" = "Synced" ] && [ "$HEALTH" = "Healthy" ]; then break; fi
+  echo "  ($i/60) ArgoCD status: sync=$STATUS health=$HEALTH, waiting..."
+  sleep 10
+done
+
 echo "Waiting for product-service pod to be ready..."
 kubectl rollout status deployment product-service -n cloudmart --timeout=300s
 
