@@ -1,0 +1,31 @@
+# Terraform state — contains all infrastructure details (endpoints, ARNs, IPs)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform variable files — may contain secrets (db_password, etc.)
+terraform.tfvars
+*.tfvars
+!*.tfvars.example
+
+# Terraform working directory
+.terraform/
+.terraform.lock.hcl
+
+# Terraform plan files
+*.tfplan
+tfplan
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Sensitive environment files
+.env
+.env.*
+!.env.example
+
+# AWS credentials (should never be here, but just in case)
+credentials
+*.pem
+*.key
