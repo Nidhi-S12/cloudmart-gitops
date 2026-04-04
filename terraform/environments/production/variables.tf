@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region to deploy all resources"
   type        = string
-  default     = "eu-west-1"
+  default     = "us-east-1"
 }
 
 variable "project_name" {
@@ -19,7 +19,7 @@ variable "environment" {
 variable "availability_zones" {
   description = "AZs to spread subnets across (must be in the selected region)"
   type        = list(string)
-  default     = ["eu-west-1a", "eu-west-1b"]
+  default     = ["us-east-1a", "us-east-1b"]
 }
 
 # EKS
