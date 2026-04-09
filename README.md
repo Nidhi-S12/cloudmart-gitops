@@ -25,306 +25,281 @@ Infrastructure-as-Code and Kubernetes manifests for the CloudMart e-commerce pla
 
 ## AWS Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                                  AWS  (us-east-1)                                │
-│                                                                                  │
-│   Route 53 (tulunad.click) ──DNS──▶ Network Load Balancer                       │
-│   Secrets Manager          ◀──IRSA── External Secrets Operator (in cluster)     │
-│   S3 (terraform state)                                                           │
-│                                                                                  │
-│  ┌───────────────────────────────────────────────────────────────────────────┐   │
-│  │                          VPC   10.0.0.0/16                                │   │
-│  │                                                                           │   │
-│  │  ┌──────────────────────────────┐  ┌────────────────────────────────────┐ │   │
-│  │  │     Public Subnets           │  │         Private Subnets            │ │   │
-│  │  │  10.0.1.0/24  10.0.2.0/24   │  │   10.0.3.0/24    10.0.4.0/24      │ │   │
-│  │  │  us-east-1a   us-east-1b    │  │   us-east-1a     us-east-1b       │ │   │
-│  │  │                             │  │                                    │ │   │
-│  │  │  ┌───────────────────────┐  │  │  ┌──────────────────────────────┐ │ │   │
-│  │  │  │  Network Load         │  │  │  │    EKS Managed Node Group    │ │ │   │
-│  │  │  │  Balancer             │──┼──┼─▶│    4 × t3.medium             │ │ │   │
-│  │  │  │  (created by Traefik  │  │  │  │    min:2  desired:4  max:5   │ │ │   │
-│  │  │  │   LoadBalancer svc)   │  │  │  │                              │ │ │   │
-│  │  │  └───────────────────────┘  │  │  │  ┌─────────┐  ┌──────────┐  │ │ │   │
-│  │  │                             │  │  │  │ Node 1  │  │ Node 2   │  │ │ │   │
-│  │  │  ┌───────────────────────┐  │  │  │  │         │  │          │  │ │ │   │
-│  │  │  │  NAT Gateway          │  │  │  │  │ [pods]  │  │ [pods]   │  │ │ │   │
-│  │  │  │  (Elastic IP)         │◀─┼──┼──│  └─────────┘  └──────────┘  │ │ │   │
-│  │  │  │  outbound internet    │  │  │  │                              │ │ │   │
-│  │  │  └──────────┬────────────┘  │  │  └──────────────────────────────┘ │ │   │
-│  │  │             │               │  │                                    │ │   │
-│  │  │  ┌──────────▼────────────┐  │  │  ┌──────────────────────────────┐ │ │   │
-│  │  │  │  Internet Gateway     │  │  │  │  RDS PostgreSQL               │ │ │   │
-│  │  │  └───────────────────────┘  │  │  │  db.t3.micro                  │ │ │   │
-│  │  └──────────────────────────┬──┘  │  │  cloudmart DB                 │ │ │   │
-│  │                             │     │  └──────────────────────────────┘ │ │   │
-│  │                        Internet   │                                    │ │   │
-│  │                                   │  ┌──────────────────────────────┐ │ │   │
-│  │                                   │  │  ElastiCache Redis            │ │ │   │
-│  │                                   │  │  cache.t3.micro               │ │ │   │
-│  │                                   │  └──────────────────────────────┘ │ │   │
-│  │                                   └────────────────────────────────────┘ │   │
-│  └───────────────────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Internet((Internet))
+    R53["Route 53\ntulunad.click"]
+    SM["AWS Secrets Manager"]
+
+    subgraph VPC["VPC — 10.0.0.0/16  (us-east-1)"]
+        subgraph Public["Public Subnets  10.0.1-2.0/24  |  us-east-1a & 1b"]
+            NLB["Network Load Balancer"]
+            NAT["NAT Gateway\nElastic IP"]
+            IGW["Internet Gateway"]
+        end
+
+        subgraph Private["Private Subnets  10.0.3-4.0/24  |  us-east-1a & 1b"]
+            subgraph EKS["EKS Node Group  —  4 × t3.medium"]
+                Traefik["Traefik\nIngress Controller"]
+                FE["frontend :3000"]
+                GW["api-gateway :3000"]
+                PS["product-service :8000"]
+                OS["order-service :3001"]
+                ESO["External Secrets Operator"]
+                ArgoCD["ArgoCD"]
+            end
+            RDS[("RDS PostgreSQL\ndb.t3.micro")]
+            Redis[("ElastiCache Redis\ncache.t3.micro")]
+        end
+    end
+
+    Internet -->|DNS query| R53
+    R53 -->|resolves to| NLB
+    NLB -->|forwards traffic| Traefik
+    Private -->|outbound via| NAT
+    NAT --> IGW
+    IGW --> Internet
+
+    ESO -->|IRSA — no keys stored| SM
+
+    PS --> RDS
+    OS --> Redis
 ```
 
 ### Subnet design
 
 | Subnet | CIDR | What lives here | Internet access |
 |--------|------|-----------------|-----------------|
-| Public 1a | 10.0.1.0/24 | NLB, NAT Gateway | Direct via Internet Gateway |
-| Public 1b | 10.0.2.0/24 | NLB, NAT Gateway (AZ-B) | Direct via Internet Gateway |
-| Private 1a | 10.0.3.0/24 | EKS nodes, RDS, Redis | Outbound only via NAT Gateway |
-| Private 1b | 10.0.4.0/24 | EKS nodes, RDS, Redis | Outbound only via NAT Gateway |
+| Public 1a/1b | 10.0.1-2.0/24 | NLB, NAT Gateway | Direct via Internet Gateway |
+| Private 1a/1b | 10.0.3-4.0/24 | EKS nodes, RDS, ElastiCache | Outbound only via NAT |
 
-**Why private subnets for nodes?** EKS nodes, RDS, and ElastiCache have no public IPs. They are completely unreachable from the internet. Traffic can only reach them via the NLB → Traefik path. This is the standard production security posture.
+**Why private subnets?** Nodes, RDS, and ElastiCache have no public IPs — completely unreachable from the internet directly. Traffic reaches pods only via NLB → Traefik.
 
-**Why two AZs?** Every subnet is mirrored across `us-east-1a` and `us-east-1b`. If one AZ goes down, the NLB routes to the surviving AZ and the cluster keeps running.
+**Why two AZs?** Subnets are mirrored across `us-east-1a` and `us-east-1b`. If one AZ goes down the cluster keeps running.
 
 ---
 
 ## Network Traffic Flow
 
-### Inbound — User visiting the site
+### Inbound — user visiting the site
 
-```
-User Browser
-    │  HTTPS tulunad.click
-    ▼
-Route 53  ──resolves to NLB──▶  Network Load Balancer  (public subnet)
-                                        │
-                                        │  forwards to NodePort
-                                        ▼
-                               Traefik Ingress  (cloudmart namespace)
-                                        │
-                    ┌───────────────────┼───────────────────┐
-                    │                   │                   │
-             PathPrefix(/api/auth)  PathPrefix(/api)   everything else
-             priority: 20           priority: 10        priority: 5
-                    │                   │                   │
-                    ▼                   ▼                   ▼
-              frontend:3000      api-gateway:3000     frontend:3000
-            (NextAuth OAuth)
+```mermaid
+flowchart TD
+    User(["👤 User Browser\nhttps://tulunad.click"])
+    R53["Route 53\nDNS lookup"]
+    NLB["Network Load Balancer\npublic subnet"]
+    Traefik["Traefik Ingress\ncloudmart namespace"]
+    FE["frontend :3000\nNext.js"]
+    GW["api-gateway :3000"]
+
+    User -->|HTTPS| R53
+    R53 -->|resolves to NLB IP| NLB
+    NLB -->|NodePort| Traefik
+
+    Traefik -->|"PathPrefix /api/auth  priority 20"| FE
+    Traefik -->|"PathPrefix /api  priority 10"| GW
+    Traefik -->|"catch-all  priority 5"| FE
 ```
 
-The `/api/auth` rule has higher priority than `/api` so NextAuth OAuth callbacks go to the frontend, not the api-gateway. Without this, Google OAuth would 404.
+> The `/api/auth` rule has higher priority than `/api` so NextAuth OAuth callbacks always reach the frontend, not the api-gateway. Without this, Google sign-in returns 404.
 
-### Outbound — Pods reaching the internet
+### Outbound — pods reaching the internet
 
+```mermaid
+flowchart LR
+    subgraph Private["Private Subnet (no public IP)"]
+        Pods["Pods"]
+    end
+    subgraph Public["Public Subnet"]
+        NAT["NAT Gateway\nElastic IP"]
+    end
+
+    Pods --> NAT
+    NAT -->|ghcr.io| GHCR["GHCR\nImage Registry"]
+    NAT -->|github.com| GitHub["GitHub\nArgoCD pulls gitops repo"]
+    NAT -->|letsencrypt.org| LE["Let's Encrypt\ncert-manager"]
+    NAT -->|"*.amazonaws.com"| AWS["AWS APIs\nSecrets Manager, EKS control plane"]
 ```
-Pod  (private subnet — no public IP)
-    │
-    ▼
-NAT Gateway  (public subnet — has Elastic IP)
-    │
-    ▼
-Internet
-    ├── ghcr.io                   pull container images
-    ├── github.com                ArgoCD pulls this repo every 3 min
-    ├── acme-v02.api.letsencrypt  cert-manager gets TLS certificates
-    └── *.amazonaws.com           Secrets Manager API, EKS control plane
-```
-
-**Why NAT Gateway and not just the Load Balancer?**
-The Load Balancer only handles inbound traffic — it's a receiver. It has no ability to forward outbound requests from pods. The NAT Gateway handles the opposite direction: pods sending requests out.
 
 ---
 
 ## API Interaction Map
 
-How every component talks to every other component at runtime:
+```mermaid
+flowchart LR
+    Browser(["Browser"])
 
+    subgraph K8s["Kubernetes — cloudmart namespace"]
+        Traefik["Traefik"]
+        FE["frontend"]
+        GW["api-gateway"]
+        PS["product-service"]
+        OS["order-service"]
+        ESO["External Secrets\nOperator"]
+        ArgoCD["ArgoCD"]
+        CM["cert-manager"]
+        Prom["Prometheus"]
+        Loki["Loki"]
+    end
+
+    subgraph AWS["AWS"]
+        NLB["NLB"]
+        SM["Secrets Manager"]
+        R53["Route 53"]
+        LE["Let's Encrypt"]
+    end
+
+    subgraph Data["Data Stores"]
+        RDS[("RDS\nPostgreSQL")]
+        Redis[("Redis\nElastiCache")]
+        Kafka[("Kafka\nStrimzi")]
+    end
+
+    GitHub["GitHub\ncloudmart-gitops"]
+
+    Browser --> NLB --> Traefik
+    Traefik -->|"/ and /api/auth"| FE
+    Traefik -->|"/api/*"| GW
+    FE -->|HTTP| GW
+    GW -->|"/products/*"| PS
+    GW -->|"/orders/*"| OS
+    PS --> RDS
+    OS --> Redis
+    OS --> Kafka
+
+    ESO -->|IRSA| SM
+    SM -->|K8s Secrets| FE
+    SM -->|K8s Secrets| PS
+    SM -->|K8s Secrets| OS
+
+    ArgoCD -->|polls every 3 min| GitHub
+    CM -->|DNS-01 challenge| R53
+    CM -->|ACME| LE
+    Prom -->|scrapes /metrics| FE
+    Prom -->|scrapes /metrics| GW
+    Prom -->|scrapes /metrics| PS
+    Prom -->|scrapes /metrics| OS
+    Loki -->|tails logs| K8s
 ```
-  EXTERNAL
-  ─────────────────────────────────────────────────────────────────────
-  Browser  ──HTTPS──▶  Route 53  ──DNS──▶  NLB  ──TCP──▶  Traefik
-
-  INGRESS ROUTING  (Traefik — IngressRoute rules)
-  ─────────────────────────────────────────────────────────────────────
-  tulunad.click/api/auth/*   priority 20  ──▶  frontend:3000
-  tulunad.click/api/*        priority 10  ──▶  api-gateway:3000
-  tulunad.click/*            priority  5  ──▶  frontend:3000
-  http://tulunad.click       redirect 301 ──▶  https://tulunad.click
-
-  INTERNAL SERVICE CALLS  (all within cloudmart namespace)
-  ─────────────────────────────────────────────────────────────────────
-  frontend          ──HTTP GET /api/products──▶  api-gateway:3000
-  frontend          ──HTTP POST /api/orders──▶   api-gateway:3000
-  api-gateway       ──HTTP proxy──▶  product-service:8000/products/*
-  api-gateway       ──HTTP proxy──▶  order-service:3001/orders/*
-  product-service   ──asyncpg──▶  RDS PostgreSQL:5432
-  order-service     ──ioredis──▶  ElastiCache Redis:6379
-  order-service     ──KafkaJS──▶  Kafka broker:9092  (topic: order.created)
-
-  SECRET INJECTION  (at pod startup)
-  ─────────────────────────────────────────────────────────────────────
-  AWS Secrets Manager  ◀──IRSA──  External Secrets Operator
-  External Secrets Operator  ──creates──▶  K8s Secrets
-  K8s Secrets  ──envFrom──▶  product-service pod  (DATABASE_URL)
-  K8s Secrets  ──envFrom──▶  order-service pod   (REDIS_HOST, KAFKA_BROKERS)
-  K8s Secrets  ──envFrom──▶  frontend pod         (GOOGLE_CLIENT_ID, NEXTAUTH_SECRET)
-  K8s Secrets  ──imagePullSecret──▶  all pods     (GHCR auth)
-
-  PLATFORM COMPONENTS
-  ─────────────────────────────────────────────────────────────────────
-  ArgoCD       ──git poll──▶  github.com/Nidhi-S12/cloudmart-gitops
-  ArgoCD       ──kubectl apply──▶  cluster (on diff detected)
-  cert-manager ──ACME DNS-01──▶  Let's Encrypt API
-  cert-manager ──Route53 API──▶  creates TXT record for domain validation
-  Prometheus   ──scrape /metrics──▶  all pods (every 15s)
-  Grafana      ──PromQL──▶  Prometheus
-  Grafana      ──LogQL──▶   Loki
-  Loki         ──tail logs──▶  all pods
-```
-
-## Kubernetes Platform Stack
-
-All installed by `infrastructure/setup.sh` in dependency order:
-
-| Component | Namespace | Why it's here |
-|-----------|-----------|---------------|
-| **Metrics Server** | kube-system | Provides real-time CPU/memory metrics — required for HPA to function |
-| **Traefik** | cloudmart | Ingress controller. Receives all external traffic and routes it to the right service. Also terminates TLS. |
-| **Strimzi** | cloudmart | Kafka operator. Manages the Kafka cluster used by order-service for event streaming. |
-| **ArgoCD** | argocd | GitOps engine. Watches this repo and automatically applies any changes to the cluster. |
-| **Prometheus + Grafana** | monitoring | Prometheus scrapes metrics from all pods. Grafana visualises them with dashboards. |
-| **Loki** | monitoring | Log aggregation. All pod logs are collected and queryable from Grafana. |
-| **Kyverno** | kyverno | Policy engine. Enforces rules like "no latest image tags" and "containers must not run as root". |
-| **cert-manager** | cert-manager | Automatically provisions TLS certificates from Let's Encrypt using DNS-01 challenge via Route 53. |
-| **External Secrets Operator** | cloudmart | Syncs secrets from AWS Secrets Manager into Kubernetes Secrets. Runs as a pod — no hardcoded AWS keys. |
-
----
-
-## Application Services
-
-```
-                         ┌──────────────────┐
-                         │    Frontend      │
-                         │   (Next.js 14)   │
-                         │   port 3000      │
-                         └────────┬─────────┘
-                                  │  all /api/* requests
-                                  ▼
-                        ┌──────────────────────┐
-                        │     API Gateway       │
-                        │     (Node.js)         │
-                        │     port 3000         │
-                        └──────────┬────────────┘
-                                   │
-             ┌─────────────────────┴──────────────────────┐
-             │                                            │
-             │ /api/products/*                            │ /api/orders/*
-             ▼                                            ▼
-  ┌──────────────────────┐                  ┌──────────────────────────┐
-  │   Product Service    │                  │      Order Service        │
-  │   (FastAPI / Python) │                  │      (Node.js)            │
-  │   port 8000          │                  │      port 3001            │
-  └──────────┬───────────┘                  └────────────┬─────────────┘
-             │                                           │
-             ▼                                      ┌────┴──────┐
-  ┌──────────────────────┐                          │           │
-  │  RDS PostgreSQL      │                          ▼           ▼
-  │  (product catalogue) │               ElastiCache      Kafka Topic
-  └──────────────────────┘               Redis             order.created
-                                         (order store)     (event stream)
-```
-
-| Service | Language | Responsibility |
-|---------|----------|---------------|
-| **frontend** | Next.js 14 (App Router) | Product browsing, cart, Google OAuth login, order history |
-| **api-gateway** | Node.js / Express | Single entry point for all API calls — proxies to the right backend service |
-| **product-service** | Python / FastAPI | Product catalogue with category filtering and search. Backed by PostgreSQL. |
-| **order-service** | Node.js / Express | Creates orders, stores them in Redis with 24h TTL, publishes `order.created` events to Kafka |
 
 ---
 
 ## GitOps Deployment Flow
 
-```
-Developer pushes code to cloudmart-services or cloudmart-frontend
-            │
-            ▼
-    GitHub Actions CI
-    ├── Gitleaks     — scans for accidentally committed secrets
-    ├── Semgrep      — static analysis (OWASP top 10, language-specific rules)
-    ├── Trivy        — scans dependencies and filesystem for CVEs
-    ├── Docker build — multi-stage, minimal final image
-    ├── Docker push  — ghcr.io/nidhi-s12/cloudmart/<service>:sha-<7-char-commit>
-    └── Kustomize edit set image  — updates newTag in kustomization.yaml
-            │
-            ▼  git commit + push to cloudmart-gitops
-    cloudmart-gitops  environments/production/kustomization.yaml updated
-            │
-            ▼
-    ArgoCD polls repo every 3 minutes, detects the new tag
-            │
-            ▼
-    ArgoCD applies updated Deployment to EKS
-            │
-            ▼
-    Kubernetes rolling update — new pods start before old ones stop
-                                zero-downtime deployment
-```
+```mermaid
+flowchart TD
+    Push["git push\ncloudmart-services or cloudmart-frontend"]
 
-Images are tagged with the short git SHA (`sha-abc1234`) not `latest`. This means every deployment is traceable to an exact commit and can be rolled back by changing the tag.
+    subgraph CI["GitHub Actions CI"]
+        Gitleaks["Gitleaks\nsecrets scan"]
+        Semgrep["Semgrep\nSAST"]
+        Trivy1["Trivy\ndependency scan"]
+        Build["docker build\nmulti-stage"]
+        Push2["docker push\nghcr.io/nidhi-s12/cloudmart/service:sha-abc1234"]
+        Trivy2["Trivy\nimage scan"]
+        Kustomize["kustomize edit set image\nupdate tag in gitops repo"]
+    end
+
+    ArgoCD["ArgoCD\ndetects diff in repo"]
+    K8s["Kubernetes\nrolling update — zero downtime"]
+
+    Push --> Gitleaks
+    Push --> Semgrep
+    Push --> Trivy1
+    Gitleaks -->|pass| Build
+    Semgrep -->|pass| Build
+    Trivy1 -->|pass| Build
+    Build --> Push2
+    Push2 --> Trivy2
+    Trivy2 --> Kustomize
+    Kustomize -->|git push to cloudmart-gitops| ArgoCD
+    ArgoCD -->|kubectl apply| K8s
+```
 
 ---
 
 ## Secrets Flow
 
-Sensitive values (database URLs, API keys, OAuth secrets) are never stored in git. The flow:
+```mermaid
+flowchart LR
+    subgraph SM["AWS Secrets Manager"]
+        S1["cloudmart/product-service\ndatabase-url"]
+        S2["cloudmart/order-service\nredis-host, kafka-brokers"]
+        S3["cloudmart/ghcr-pull\nghcr-token"]
+        S4["cloudmart/google-oauth\nclient-id, client-secret, nextauth-secret"]
+    end
 
-```
-AWS Secrets Manager
-  cloudmart/product-service   →  database-url
-  cloudmart/order-service     →  redis-host, kafka-brokers
-  cloudmart/ghcr-pull         →  ghcr-token  (GHCR image pull)
-  cloudmart/google-oauth      →  client-id, client-secret, nextauth-secret
-          │
-          │  IRSA — pod gets AWS permissions via K8s ServiceAccount
-          │  No AWS access keys stored anywhere in the cluster
-          ▼
-  External Secrets Operator
-  reads from Secrets Manager and creates K8s Secrets
-          │
-          ▼
-  Kubernetes Secrets  (in cloudmart namespace)
-          │
-          ▼
-  Pod env vars  (mounted via envFrom / secretRef)
-```
+    ESO["External Secrets Operator\n(uses IRSA — no AWS keys stored)"]
 
-**IRSA (IAM Roles for Service Accounts)** — Instead of giving the ESO pod an AWS access key, we annotate its ServiceAccount with an IAM role ARN. AWS OIDC federation trusts that ServiceAccount and issues temporary credentials automatically. No long-lived keys anywhere.
+    subgraph KSec["Kubernetes Secrets"]
+        KS1["product-service-secret"]
+        KS2["order-service-secret"]
+        KS3["ghcr-pull-secret"]
+        KS4["frontend-oauth-secret"]
+    end
+
+    PS["product-service pod"]
+    OS["order-service pod"]
+    FE["frontend pod"]
+    All["all pods\n(image pull)"]
+
+    SM --> ESO
+    ESO --> KSec
+    KS1 -->|envFrom| PS
+    KS2 -->|envFrom| OS
+    KS4 -->|envFrom| FE
+    KS3 -->|imagePullSecret| All
+```
 
 ---
 
 ## TLS Certificate Flow
 
-```
-cert-manager reads the Certificate resource
-        │
-        ▼
-Sends ACME certificate request to Let's Encrypt
-        │
-        ▼
-Let's Encrypt issues DNS-01 challenge:
-  "Create TXT record _acme-challenge.tulunad.click"
-        │
-        ▼
-cert-manager creates the TXT record in Route 53  (using IRSA)
-        │
-        ▼
-Let's Encrypt verifies the record → issues the certificate
-        │
-        ▼
-cert-manager stores the certificate in a K8s Secret
-        │
-        ▼
-Traefik reads the Secret and serves HTTPS
+```mermaid
+flowchart TD
+    CM["cert-manager\nreads Certificate resource"]
+    LE["Let's Encrypt\nACME server"]
+    R53["Route 53\nDNS"]
+    Secret["K8s Secret\ntls.crt + tls.key"]
+    Traefik["Traefik\nserves HTTPS"]
+
+    CM -->|"ACME DNS-01 challenge request"| LE
+    LE -->|"prove ownership: create TXT record\n_acme-challenge.tulunad.click"| CM
+    CM -->|"creates TXT record via IRSA"| R53
+    R53 -->|"TXT record visible"| LE
+    LE -->|"verified — issues certificate"| CM
+    CM -->|"stores certificate"| Secret
+    Secret -->|"TLS termination"| Traefik
 ```
 
-**Why DNS-01 and not HTTP-01?** DNS-01 proves domain ownership without needing the cluster to be publicly reachable. This means certificates can be provisioned even if the NLB isn't set up yet.
+> DNS-01 challenge is used instead of HTTP-01 because it works before the cluster is publicly reachable — cert-manager can provision the certificate during cluster bootstrap.
+
+---
+
+## Kubernetes Platform Stack
+
+| Component | Namespace | Why it's here |
+|-----------|-----------|---------------|
+| **Metrics Server** | kube-system | Provides CPU/memory metrics — required for HPA to work |
+| **Traefik** | cloudmart | Ingress controller — routes HTTPS traffic, terminates TLS |
+| **Strimzi** | cloudmart | Kafka operator — manages the Kafka cluster for order events |
+| **ArgoCD** | argocd | GitOps engine — watches this repo, applies changes to cluster |
+| **Prometheus + Grafana** | monitoring | Metrics collection and dashboards |
+| **Loki** | monitoring | Log aggregation — all pod logs queryable from Grafana |
+| **Kyverno** | kyverno | Policy enforcement — no latest tags, no root containers |
+| **cert-manager** | cert-manager | Auto-provisions and renews Let's Encrypt TLS certificates |
+| **External Secrets Operator** | cloudmart | Syncs secrets from AWS Secrets Manager into K8s Secrets |
+
+---
+
+## Application Services
+
+| Service | Language | Port | Backing store |
+|---------|----------|------|---------------|
+| frontend | Next.js 14 | 3000 | — |
+| api-gateway | Node.js / Express | 3000 | — |
+| product-service | Python / FastAPI | 8000 | RDS PostgreSQL |
+| order-service | Node.js / Express | 3001 | ElastiCache Redis + Kafka |
 
 ---
 
@@ -332,38 +307,29 @@ Traefik reads the Secret and serves HTTPS
 
 All 4 services have a HorizontalPodAutoscaler backed by Metrics Server:
 
-| Service | Min pods | Max pods | Scale trigger |
-|---------|----------|----------|---------------|
+| Service | Min | Max | Scale trigger |
+|---------|-----|-----|---------------|
 | frontend | 1 | 4 | CPU > 70% or Memory > 80% |
 | api-gateway | 1 | 4 | CPU > 70% or Memory > 80% |
 | product-service | 1 | 4 | CPU > 70% or Memory > 80% |
 | order-service | 1 | 4 | CPU > 70% or Memory > 80% |
 
-Scale-down has a 5-minute stabilisation window to avoid flapping during bursty traffic.
+Scale-down has a 5-minute stabilisation window to avoid flapping.
 
 ---
 
 ## Policy Enforcement (Kyverno)
-
-Four policies run in Audit mode across all pods:
 
 | Policy | Rule |
 |--------|------|
 | `disallow-latest-tag` | Image tag must be pinned (e.g. `sha-abc1234`) — `latest` is non-deterministic |
 | `disallow-root-user` | Containers must run as a non-root user |
 | `require-probes` | Liveness and readiness probes must be defined |
-| `require-resource-limits` | CPU and memory limits must be set — prevents noisy-neighbour issues |
+| `require-resource-limits` | CPU and memory limits must be set |
 
 ---
 
 ## Monitoring & Alerting
-
-**Grafana** includes dashboards for:
-- Kubernetes cluster overview (CPU, memory, pod counts)
-- Per-pod resource usage
-- Loki log explorer
-
-**Prometheus alert rules** (`infrastructure/monitoring/alert-rules.yaml`):
 
 | Alert | Fires when |
 |-------|-----------|
@@ -371,10 +337,10 @@ Four policies run in Audit mode across all pods:
 | `PodImagePullFailed` | Any pod is in ImagePullBackOff |
 | `HighCPUUsage` | Pod CPU > 85% for 5 minutes |
 | `HighMemoryUsage` | Pod memory > 90% for 5 minutes |
-| `HPAAtMaxReplicas` | Any HPA is at its replica ceiling (can't scale further) |
-| `HPAScalingLimited` | HPA wants to scale but is being throttled |
+| `HPAAtMaxReplicas` | Any HPA is at its replica ceiling |
+| `HPAScalingLimited` | HPA wants to scale but is throttled |
 | `KafkaUnderReplicatedPartitions` | Kafka partition has fewer replicas than expected |
-| `KafkaConsumerGroupLag` | Consumer group is falling behind on messages |
+| `KafkaConsumerGroupLag` | Consumer group is falling behind |
 
 ---
 
@@ -382,21 +348,18 @@ Four policies run in Audit mode across all pods:
 
 ```
 cloudmart-gitops/
-│
 ├── terraform/
-│   ├── environments/production/    # Root module — wires all modules together
-│   │   ├── main.tf
+│   ├── environments/production/    # Root module
+│   │   ├── main.tf                 # Wires all modules together
 │   │   ├── variables.tf
 │   │   ├── outputs.tf
-│   │   ├── providers.tf
 │   │   └── terraform.tfvars        # NOT in git — contains db_password
 │   └── modules/
 │       ├── vpc/                    # VPC, subnets, IGW, NAT, route tables
 │       ├── eks/                    # EKS cluster + managed node group
 │       ├── rds/                    # PostgreSQL (private subnet)
 │       ├── elasticache/            # Redis (private subnet)
-│       └── s3/                     # S3 bucket
-│
+│       └── s3/
 ├── base/                           # K8s manifests — environment-agnostic
 │   ├── frontend/                   # Deployment, Service, HPA
 │   ├── api-gateway/
@@ -404,23 +367,19 @@ cloudmart-gitops/
 │   ├── order-service/
 │   ├── kafka/                      # Strimzi KafkaNodePool + Kafka CRs
 │   └── external-secrets/           # SecretStore + ExternalSecrets
-│
 ├── environments/
 │   ├── production/                 # Kustomize overlay — pinned image tags
 │   │   ├── kustomization.yaml      # Updated by CI on every deploy
-│   │   └── patches/                # Env vars, resource overrides
+│   │   └── patches/
 │   └── local/                      # Kustomize overlay — local dev
-│
 ├── argocd/apps/
-│   └── services/cloudmart-production.yaml   # ArgoCD Application
-│
+│   └── services/cloudmart-production.yaml
 └── infrastructure/
-    ├── setup.sh                    # Full cluster bootstrap (run once after terraform apply)
-    ├── cert-manager/               # ClusterIssuer, Certificate
-    ├── ingress/                    # Subdomain IngressRoutes
+    ├── setup.sh                    # Full cluster bootstrap script
+    ├── cert-manager/
     ├── traefik/values.yaml
     ├── kafka/values.yaml
-    ├── kyverno/                    # 4 policy files
+    ├── kyverno/
     └── monitoring/                 # prometheus-values.yaml, loki-values.yaml, alert-rules.yaml
 ```
 
@@ -429,9 +388,7 @@ cloudmart-gitops/
 ## Spinning Up the Cluster
 
 ### Prerequisites
-
-- AWS CLI configured
-- Terraform ≥ 1.5, kubectl, helm, kustomize
+- AWS CLI configured, Terraform ≥ 1.5, kubectl, helm, kustomize
 - Domain in Route 53 with a hosted zone
 
 ### 1 — Provision AWS infrastructure
@@ -480,7 +437,7 @@ cd infrastructure/
 cd terraform/environments/production
 terraform destroy
 
-# Then manually delete secrets (not managed by Terraform):
+# Secrets are not managed by Terraform — delete manually:
 for secret in cloudmart/product-service cloudmart/order-service cloudmart/ghcr-pull cloudmart/google-oauth; do
   aws secretsmanager delete-secret --secret-id $secret --region us-east-1 --force-delete-without-recovery
 done
@@ -497,7 +454,7 @@ kubectl port-forward svc/kube-prometheus-stack-grafana 3000:80 -n monitoring
 
 # ArgoCD
 kubectl port-forward svc/argocd-server 8080:80 -n argocd
-# → http://localhost:8080  (admin / get password below)
+# → http://localhost:8080
 kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d
 
 # Prometheus
