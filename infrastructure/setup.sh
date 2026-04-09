@@ -18,7 +18,7 @@ echo "=== CloudMart Infrastructure Setup ==="
 REGION="us-east-1"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 CLUSTER_NAME="cloudmart-production"
-HOSTED_ZONE_ID="Z1019724D4PF6ZINX13C"
+HOSTED_ZONE_ID="Z02626052FJ4KVMZOIHJ6"
 ELB_ZONE="Z35SXDOTRQ7X7K"
 
 # ── Pre-flight: verify required AWS Secrets exist ─────────────────────────────
@@ -91,7 +91,8 @@ helm upgrade --install loki grafana/loki -n monitoring \
 
 # ── Kyverno ───────────────────────────────────────────────────────────────────
 echo "Installing Kyverno..."
-helm upgrade --install kyverno kyverno/kyverno -n kyverno --version 3.2.6
+kubectl delete job kyverno-clean-reports -n kyverno --ignore-not-found
+helm upgrade --install kyverno kyverno/kyverno -n kyverno --version 3.2.6 --timeout 5m --no-hooks
 
 echo "Applying Kyverno policies..."
 kubectl apply -f kyverno/
