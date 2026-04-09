@@ -1,5 +1,12 @@
 # CloudMart GitOps
 
+![Terraform](https://img.shields.io/badge/Terraform-1.5+-7B42BC?logo=terraform&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-EKS-FF9900?logo=amazon-aws&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-1.31-326CE5?logo=kubernetes&logoColor=white)
+![ArgoCD](https://img.shields.io/badge/ArgoCD-GitOps-EF7B4D?logo=argo&logoColor=white)
+![Helm](https://img.shields.io/badge/Helm-Charts-0F1689?logo=helm&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 Infrastructure-as-Code and Kubernetes manifests for the CloudMart e-commerce platform. This repo is the single source of truth for everything running on AWS — from the VPC and EKS cluster to application deployments.
 
 **Live at:** `https://tulunad.click`
@@ -19,51 +26,61 @@ Infrastructure-as-Code and Kubernetes manifests for the CloudMart e-commerce pla
 ## AWS Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            AWS  (us-east-1)                             │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                             VPC  10.0.0.0/16                     │   │
-│  │                                                                  │   │
-│  │   ┌────────────────────────┐    ┌────────────────────────────┐   │   │
-│  │   │    Public Subnets      │    │      Private Subnets        │   │   │
-│  │   │  us-east-1a  1b        │    │   us-east-1a  1b            │   │   │
-│  │   │                        │    │                             │   │   │
-│  │   │  ┌──────────────────┐  │    │  ┌─────────────────────┐   │   │   │
-│  │   │  │ Network Load     │  │    │  │  EKS Worker Nodes   │   │   │   │
-│  │   │  │ Balancer         │──┼────┼─▶│  4 × t3.medium      │   │   │   │
-│  │   │  │ (Traefik)        │  │    │  │                     │   │   │   │
-│  │   │  └──────────────────┘  │    │  │  ┌───────────────┐  │   │   │   │
-│  │   │                        │    │  │  │  Pods         │  │   │   │   │
-│  │   │  ┌──────────────────┐  │    │  │  │  (cloudmart)  │  │   │   │   │
-│  │   │  │  NAT Gateway     │◀─┼────┼──│  └───────────────┘  │   │   │   │
-│  │   │  │  (Elastic IP)    │  │    │  └─────────────────────┘   │   │   │
-│  │   │  └────────┬─────────┘  │    │                             │   │   │
-│  │   └───────────┼────────────┘    │  ┌─────────────────────┐   │   │   │
-│  │               │                 │  │  RDS PostgreSQL      │   │   │   │
-│  │               ▼                 │  │  db.t3.micro         │   │   │   │
-│  │           Internet              │  └─────────────────────┘   │   │   │
-│  │                                 │                             │   │   │
-│  │                                 │  ┌─────────────────────┐   │   │   │
-│  │                                 │  │  ElastiCache Redis   │   │   │   │
-│  │                                 │  │  cache.t3.micro      │   │   │   │
-│  │                                 │  └─────────────────────┘   │   │   │
-│  └─────────────────────────────────┴─────────────────────────────┘   │   │
-│                                                                         │
-│   ┌───────────────┐   ┌──────────────────────┐   ┌─────────────────┐  │
-│   │  S3 Bucket    │   │   Secrets Manager     │   │   Route 53      │  │
-│   │  (assets)     │   │   (app secrets)       │   │   tulunad.click │  │
-│   └───────────────┘   └──────────────────────┘   └─────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                                  AWS  (us-east-1)                                │
+│                                                                                  │
+│   Route 53 (tulunad.click) ──DNS──▶ Network Load Balancer                       │
+│   Secrets Manager          ◀──IRSA── External Secrets Operator (in cluster)     │
+│   S3 (terraform state)                                                           │
+│                                                                                  │
+│  ┌───────────────────────────────────────────────────────────────────────────┐   │
+│  │                          VPC   10.0.0.0/16                                │   │
+│  │                                                                           │   │
+│  │  ┌──────────────────────────────┐  ┌────────────────────────────────────┐ │   │
+│  │  │     Public Subnets           │  │         Private Subnets            │ │   │
+│  │  │  10.0.1.0/24  10.0.2.0/24   │  │   10.0.3.0/24    10.0.4.0/24      │ │   │
+│  │  │  us-east-1a   us-east-1b    │  │   us-east-1a     us-east-1b       │ │   │
+│  │  │                             │  │                                    │ │   │
+│  │  │  ┌───────────────────────┐  │  │  ┌──────────────────────────────┐ │ │   │
+│  │  │  │  Network Load         │  │  │  │    EKS Managed Node Group    │ │ │   │
+│  │  │  │  Balancer             │──┼──┼─▶│    4 × t3.medium             │ │ │   │
+│  │  │  │  (created by Traefik  │  │  │  │    min:2  desired:4  max:5   │ │ │   │
+│  │  │  │   LoadBalancer svc)   │  │  │  │                              │ │ │   │
+│  │  │  └───────────────────────┘  │  │  │  ┌─────────┐  ┌──────────┐  │ │ │   │
+│  │  │                             │  │  │  │ Node 1  │  │ Node 2   │  │ │ │   │
+│  │  │  ┌───────────────────────┐  │  │  │  │         │  │          │  │ │ │   │
+│  │  │  │  NAT Gateway          │  │  │  │  │ [pods]  │  │ [pods]   │  │ │ │   │
+│  │  │  │  (Elastic IP)         │◀─┼──┼──│  └─────────┘  └──────────┘  │ │ │   │
+│  │  │  │  outbound internet    │  │  │  │                              │ │ │   │
+│  │  │  └──────────┬────────────┘  │  │  └──────────────────────────────┘ │ │   │
+│  │  │             │               │  │                                    │ │   │
+│  │  │  ┌──────────▼────────────┐  │  │  ┌──────────────────────────────┐ │ │   │
+│  │  │  │  Internet Gateway     │  │  │  │  RDS PostgreSQL               │ │ │   │
+│  │  │  └───────────────────────┘  │  │  │  db.t3.micro                  │ │ │   │
+│  │  └──────────────────────────┬──┘  │  │  cloudmart DB                 │ │ │   │
+│  │                             │     │  └──────────────────────────────┘ │ │   │
+│  │                        Internet   │                                    │ │   │
+│  │                                   │  ┌──────────────────────────────┐ │ │   │
+│  │                                   │  │  ElastiCache Redis            │ │ │   │
+│  │                                   │  │  cache.t3.micro               │ │ │   │
+│  │                                   │  └──────────────────────────────┘ │ │   │
+│  │                                   └────────────────────────────────────┘ │   │
+│  └───────────────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Why this layout?
+### Subnet design
 
-**Private subnets** — EKS nodes, RDS, and ElastiCache have no public IPs. They are unreachable from the internet directly. This is the standard production security posture.
+| Subnet | CIDR | What lives here | Internet access |
+|--------|------|-----------------|-----------------|
+| Public 1a | 10.0.1.0/24 | NLB, NAT Gateway | Direct via Internet Gateway |
+| Public 1b | 10.0.2.0/24 | NLB, NAT Gateway (AZ-B) | Direct via Internet Gateway |
+| Private 1a | 10.0.3.0/24 | EKS nodes, RDS, Redis | Outbound only via NAT Gateway |
+| Private 1b | 10.0.4.0/24 | EKS nodes, RDS, Redis | Outbound only via NAT Gateway |
 
-**Public subnets** — Only the Network Load Balancer and NAT Gateway live here. The NLB receives inbound traffic from users. The NAT Gateway allows pods to make outbound calls (image pulls, API calls, Let's Encrypt) without exposing themselves.
+**Why private subnets for nodes?** EKS nodes, RDS, and ElastiCache have no public IPs. They are completely unreachable from the internet. Traffic can only reach them via the NLB → Traefik path. This is the standard production security posture.
 
-**Two AZs** — Every subnet is replicated across `us-east-1a` and `us-east-1b`. If one AZ goes down, the cluster keeps running.
+**Why two AZs?** Every subnet is mirrored across `us-east-1a` and `us-east-1b`. If one AZ goes down, the NLB routes to the surviving AZ and the cluster keeps running.
 
 ---
 
@@ -113,6 +130,53 @@ Internet
 The Load Balancer only handles inbound traffic — it's a receiver. It has no ability to forward outbound requests from pods. The NAT Gateway handles the opposite direction: pods sending requests out.
 
 ---
+
+## API Interaction Map
+
+How every component talks to every other component at runtime:
+
+```
+  EXTERNAL
+  ─────────────────────────────────────────────────────────────────────
+  Browser  ──HTTPS──▶  Route 53  ──DNS──▶  NLB  ──TCP──▶  Traefik
+
+  INGRESS ROUTING  (Traefik — IngressRoute rules)
+  ─────────────────────────────────────────────────────────────────────
+  tulunad.click/api/auth/*   priority 20  ──▶  frontend:3000
+  tulunad.click/api/*        priority 10  ──▶  api-gateway:3000
+  tulunad.click/*            priority  5  ──▶  frontend:3000
+  http://tulunad.click       redirect 301 ──▶  https://tulunad.click
+
+  INTERNAL SERVICE CALLS  (all within cloudmart namespace)
+  ─────────────────────────────────────────────────────────────────────
+  frontend          ──HTTP GET /api/products──▶  api-gateway:3000
+  frontend          ──HTTP POST /api/orders──▶   api-gateway:3000
+  api-gateway       ──HTTP proxy──▶  product-service:8000/products/*
+  api-gateway       ──HTTP proxy──▶  order-service:3001/orders/*
+  product-service   ──asyncpg──▶  RDS PostgreSQL:5432
+  order-service     ──ioredis──▶  ElastiCache Redis:6379
+  order-service     ──KafkaJS──▶  Kafka broker:9092  (topic: order.created)
+
+  SECRET INJECTION  (at pod startup)
+  ─────────────────────────────────────────────────────────────────────
+  AWS Secrets Manager  ◀──IRSA──  External Secrets Operator
+  External Secrets Operator  ──creates──▶  K8s Secrets
+  K8s Secrets  ──envFrom──▶  product-service pod  (DATABASE_URL)
+  K8s Secrets  ──envFrom──▶  order-service pod   (REDIS_HOST, KAFKA_BROKERS)
+  K8s Secrets  ──envFrom──▶  frontend pod         (GOOGLE_CLIENT_ID, NEXTAUTH_SECRET)
+  K8s Secrets  ──imagePullSecret──▶  all pods     (GHCR auth)
+
+  PLATFORM COMPONENTS
+  ─────────────────────────────────────────────────────────────────────
+  ArgoCD       ──git poll──▶  github.com/Nidhi-S12/cloudmart-gitops
+  ArgoCD       ──kubectl apply──▶  cluster (on diff detected)
+  cert-manager ──ACME DNS-01──▶  Let's Encrypt API
+  cert-manager ──Route53 API──▶  creates TXT record for domain validation
+  Prometheus   ──scrape /metrics──▶  all pods (every 15s)
+  Grafana      ──PromQL──▶  Prometheus
+  Grafana      ──LogQL──▶   Loki
+  Loki         ──tail logs──▶  all pods
+```
 
 ## Kubernetes Platform Stack
 
