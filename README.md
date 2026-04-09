@@ -9,8 +9,6 @@
 
 Infrastructure-as-Code and Kubernetes manifests for the CloudMart e-commerce platform. This repo is the single source of truth for everything running on AWS — from the VPC and EKS cluster to application deployments.
 
-**Live at:** `https://tulunad.click`
-
 ---
 
 ## Repositories
@@ -27,55 +25,59 @@ Infrastructure-as-Code and Kubernetes manifests for the CloudMart e-commerce pla
 
 ```mermaid
 flowchart TD
-    Internet((Internet))
-    R53["Route 53\ntulunad.click"]
-    SM["AWS Secrets Manager"]
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#fff
+    classDef k8s fill:#326CE5,stroke:#1a3a8f,color:#fff
+    classDef app fill:#059669,stroke:#065f46,color:#fff
+    classDef db fill:#7C3AED,stroke:#4c1d95,color:#fff
+    classDef ext fill:#475569,stroke:#1e293b,color:#fff
 
-    subgraph VPC["VPC — 10.0.0.0/16  (us-east-1)"]
-        subgraph Public["Public Subnets  10.0.1-2.0/24  |  us-east-1a & 1b"]
-            NLB["Network Load Balancer"]
-            NAT["NAT Gateway\nElastic IP"]
-            IGW["Internet Gateway"]
+    Internet((Internet)):::ext
+    R53["Route 53\nDNS"]:::aws
+    SM["Secrets Manager"]:::aws
+
+    subgraph VPC["VPC"]
+        subgraph Public["Public Subnets — Multi-AZ"]
+            NLB["Network Load Balancer"]:::aws
+            NAT["NAT Gateway"]:::aws
+            IGW["Internet Gateway"]:::aws
         end
 
-        subgraph Private["Private Subnets  10.0.3-4.0/24  |  us-east-1a & 1b"]
-            subgraph EKS["EKS Node Group  —  4 × t3.medium"]
-                Traefik["Traefik\nIngress Controller"]
-                FE["frontend :3000"]
-                GW["api-gateway :3000"]
-                PS["product-service :8000"]
-                OS["order-service :3001"]
-                ESO["External Secrets Operator"]
-                ArgoCD["ArgoCD"]
+        subgraph Private["Private Subnets — Multi-AZ"]
+            subgraph EKS["EKS Node Group"]
+                Traefik["Traefik\nIngress Controller"]:::k8s
+                FE["frontend"]:::app
+                GW["api-gateway"]:::app
+                PS["product-service"]:::app
+                OS["order-service"]:::app
+                ESO["External Secrets\nOperator"]:::k8s
+                ArgoCD["ArgoCD"]:::k8s
             end
-            RDS[("RDS PostgreSQL\ndb.t3.micro")]
-            Redis[("ElastiCache Redis\ncache.t3.micro")]
+            RDS[("RDS PostgreSQL")]:::db
+            Redis[("ElastiCache Redis")]:::db
         end
     end
 
     Internet -->|DNS query| R53
     R53 -->|resolves to| NLB
     NLB -->|forwards traffic| Traefik
-    Private -->|outbound via| NAT
+    Private -->|outbound requests| NAT
     NAT --> IGW
     IGW --> Internet
-
     ESO -->|IRSA — no keys stored| SM
-
     PS --> RDS
     OS --> Redis
 ```
 
 ### Subnet design
 
-| Subnet | CIDR | What lives here | Internet access |
-|--------|------|-----------------|-----------------|
-| Public 1a/1b | 10.0.1-2.0/24 | NLB, NAT Gateway | Direct via Internet Gateway |
-| Private 1a/1b | 10.0.3-4.0/24 | EKS nodes, RDS, ElastiCache | Outbound only via NAT |
+| Subnet | What lives here | Internet access |
+|--------|-----------------|-----------------|
+| Public (Multi-AZ) | NLB, NAT Gateway | Direct via Internet Gateway |
+| Private (Multi-AZ) | EKS nodes, RDS, ElastiCache | Outbound only via NAT |
 
-**Why private subnets?** Nodes, RDS, and ElastiCache have no public IPs — completely unreachable from the internet directly. Traffic reaches pods only via NLB → Traefik.
+**Why private subnets?** Nodes, RDS, and ElastiCache have no public IPs — unreachable from the internet directly. Traffic reaches pods only via NLB → Traefik.
 
-**Why two AZs?** Subnets are mirrored across `us-east-1a` and `us-east-1b`. If one AZ goes down the cluster keeps running.
+**Why two AZs?** Every resource is replicated across two availability zones. If one AZ goes down the cluster keeps running.
 
 ---
 
@@ -85,20 +87,24 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    User(["👤 User Browser\nhttps://tulunad.click"])
-    R53["Route 53\nDNS lookup"]
-    NLB["Network Load Balancer\npublic subnet"]
-    Traefik["Traefik Ingress\ncloudmart namespace"]
-    FE["frontend :3000\nNext.js"]
-    GW["api-gateway :3000"]
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#fff
+    classDef k8s fill:#326CE5,stroke:#1a3a8f,color:#fff
+    classDef app fill:#059669,stroke:#065f46,color:#fff
+    classDef user fill:#F59E0B,stroke:#92400e,color:#fff
+
+    User(["User Browser"]):::user
+    R53["Route 53"]:::aws
+    NLB["Network Load Balancer"]:::aws
+    Traefik["Traefik Ingress"]:::k8s
+    FE["frontend\nNext.js"]:::app
+    GW["api-gateway"]:::app
 
     User -->|HTTPS| R53
-    R53 -->|resolves to NLB IP| NLB
+    R53 -->|resolves to NLB| NLB
     NLB -->|NodePort| Traefik
-
-    Traefik -->|"PathPrefix /api/auth  priority 20"| FE
-    Traefik -->|"PathPrefix /api  priority 10"| GW
-    Traefik -->|"catch-all  priority 5"| FE
+    Traefik -->|"/api/auth  priority 20"| FE
+    Traefik -->|"/api/*  priority 10"| GW
+    Traefik -->|"all other routes  priority 5"| FE
 ```
 
 > The `/api/auth` rule has higher priority than `/api` so NextAuth OAuth callbacks always reach the frontend, not the api-gateway. Without this, Google sign-in returns 404.
@@ -107,52 +113,57 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph Private["Private Subnet (no public IP)"]
-        Pods["Pods"]
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#fff
+    classDef k8s fill:#326CE5,stroke:#1a3a8f,color:#fff
+    classDef ext fill:#475569,stroke:#1e293b,color:#fff
+
+    subgraph Private["Private Subnet — no public IP"]
+        Pods["Pods"]:::k8s
     end
     subgraph Public["Public Subnet"]
-        NAT["NAT Gateway\nElastic IP"]
+        NAT["NAT Gateway"]:::aws
     end
 
+    GHCR["Container Registry\nimage pulls"]:::ext
+    GitHub["GitHub\nArgoCD git sync"]:::ext
+    LE["Let's Encrypt\ncert-manager"]:::ext
+    AWSAPI["AWS APIs\nSecrets Manager, EKS"]:::aws
+
     Pods --> NAT
-    NAT -->|ghcr.io| GHCR["GHCR\nImage Registry"]
-    NAT -->|github.com| GitHub["GitHub\nArgoCD pulls gitops repo"]
-    NAT -->|letsencrypt.org| LE["Let's Encrypt\ncert-manager"]
-    NAT -->|"*.amazonaws.com"| AWS["AWS APIs\nSecrets Manager, EKS control plane"]
+    NAT --> GHCR
+    NAT --> GitHub
+    NAT --> LE
+    NAT --> AWSAPI
 ```
 
 ---
-
 
 ## GitOps Deployment Flow
 
 ```mermaid
 flowchart TD
-    Push["git push\ncloudmart-services or cloudmart-frontend"]
+    classDef git fill:#24292e,stroke:#000,color:#fff
+    classDef sec fill:#EF4444,stroke:#991b1b,color:#fff
+    classDef build fill:#0EA5E9,stroke:#0369a1,color:#fff
+    classDef cd fill:#EF7B4D,stroke:#9a3412,color:#fff
+    classDef k8s fill:#326CE5,stroke:#1a3a8f,color:#fff
+
+    Push["git push\nto services or frontend repo"]:::git
 
     subgraph CI["GitHub Actions CI"]
-        Gitleaks["Gitleaks\nsecrets scan"]
-        Semgrep["Semgrep\nSAST"]
-        Trivy1["Trivy\ndependency scan"]
-        Build["docker build\nmulti-stage"]
-        Push2["docker push\nghcr.io/nidhi-s12/cloudmart/service:sha-abc1234"]
-        Trivy2["Trivy\nimage scan"]
-        Kustomize["kustomize edit set image\nupdate tag in gitops repo"]
+        Scans["Security Scans\nGitleaks · Semgrep · Trivy"]:::sec
+        Build["docker build\nmulti-stage"]:::build
+        Publish["push image\ntagged with git SHA"]:::build
+        ImageScan["Trivy image scan"]:::sec
+        Update["kustomize edit set image\nupdate tag in gitops repo"]:::build
     end
 
-    ArgoCD["ArgoCD\ndetects diff in repo"]
-    K8s["Kubernetes\nrolling update — zero downtime"]
+    ArgoCD["ArgoCD\ndetects diff — auto sync"]:::cd
+    K8s["Kubernetes\nrolling update — zero downtime"]:::k8s
 
-    Push --> Gitleaks
-    Push --> Semgrep
-    Push --> Trivy1
-    Gitleaks -->|pass| Build
-    Semgrep -->|pass| Build
-    Trivy1 -->|pass| Build
-    Build --> Push2
-    Push2 --> Trivy2
-    Trivy2 --> Kustomize
-    Kustomize -->|git push to cloudmart-gitops| ArgoCD
+    Push --> Scans
+    Scans -->|all pass| Build --> Publish --> ImageScan --> Update
+    Update -->|git push| ArgoCD
     ArgoCD -->|kubectl apply| K8s
 ```
 
@@ -162,29 +173,32 @@ flowchart TD
 
 ```mermaid
 flowchart LR
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#fff
+    classDef k8s fill:#326CE5,stroke:#1a3a8f,color:#fff
+    classDef app fill:#059669,stroke:#065f46,color:#fff
+
     subgraph SM["AWS Secrets Manager"]
-        S1["cloudmart/product-service\ndatabase-url"]
-        S2["cloudmart/order-service\nredis-host, kafka-brokers"]
-        S3["cloudmart/ghcr-pull\nghcr-token"]
-        S4["cloudmart/google-oauth\nclient-id, client-secret, nextauth-secret"]
+        S1["product-service secret\ndatabase credentials"]:::aws
+        S2["order-service secret\nredis + kafka config"]:::aws
+        S3["image pull secret\ncontainer registry token"]:::aws
+        S4["oauth secret\nGoogle client credentials"]:::aws
     end
 
-    ESO["External Secrets Operator\n(uses IRSA — no AWS keys stored)"]
+    ESO["External Secrets Operator\nIRSA — no AWS keys in cluster"]:::k8s
 
     subgraph KSec["Kubernetes Secrets"]
-        KS1["product-service-secret"]
-        KS2["order-service-secret"]
-        KS3["ghcr-pull-secret"]
-        KS4["frontend-oauth-secret"]
+        KS1["product-service-secret"]:::k8s
+        KS2["order-service-secret"]:::k8s
+        KS3["ghcr-pull-secret"]:::k8s
+        KS4["frontend-oauth-secret"]:::k8s
     end
 
-    PS["product-service pod"]
-    OS["order-service pod"]
-    FE["frontend pod"]
-    All["all pods\n(image pull)"]
+    PS["product-service"]:::app
+    OS["order-service"]:::app
+    FE["frontend"]:::app
+    All["all pods"]:::app
 
-    SM --> ESO
-    ESO --> KSec
+    SM --> ESO --> KSec
     KS1 -->|envFrom| PS
     KS2 -->|envFrom| OS
     KS4 -->|envFrom| FE
@@ -197,22 +211,26 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    CM["cert-manager\nreads Certificate resource"]
-    LE["Let's Encrypt\nACME server"]
-    R53["Route 53\nDNS"]
-    Secret["K8s Secret\ntls.crt + tls.key"]
-    Traefik["Traefik\nserves HTTPS"]
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#fff
+    classDef k8s fill:#326CE5,stroke:#1a3a8f,color:#fff
+    classDef ext fill:#475569,stroke:#1e293b,color:#fff
 
-    CM -->|"ACME DNS-01 challenge request"| LE
-    LE -->|"prove ownership: create TXT record\n_acme-challenge.tulunad.click"| CM
-    CM -->|"creates TXT record via IRSA"| R53
-    R53 -->|"TXT record visible"| LE
-    LE -->|"verified — issues certificate"| CM
-    CM -->|"stores certificate"| Secret
-    Secret -->|"TLS termination"| Traefik
+    CM["cert-manager"]:::k8s
+    LE["Let's Encrypt\nACME server"]:::ext
+    R53["Route 53"]:::aws
+    Secret["K8s TLS Secret"]:::k8s
+    Traefik["Traefik\nserves HTTPS"]:::k8s
+
+    CM -->|certificate request| LE
+    LE -->|DNS-01 challenge\nprove domain ownership| CM
+    CM -->|create DNS TXT record\nvia IRSA| R53
+    R53 -->|record visible| LE
+    LE -->|certificate issued| CM
+    CM -->|store cert| Secret
+    Secret -->|TLS termination| Traefik
 ```
 
-> DNS-01 challenge is used instead of HTTP-01 because it works before the cluster is publicly reachable — cert-manager can provision the certificate during cluster bootstrap.
+> DNS-01 is used instead of HTTP-01 so the certificate can be provisioned during cluster bootstrap, before the cluster is publicly reachable.
 
 ---
 
@@ -329,7 +347,7 @@ cloudmart-gitops/
 
 ### Prerequisites
 - AWS CLI configured, Terraform ≥ 1.5, kubectl, helm, kustomize
-- Domain in Route 53 with a hosted zone
+- Domain registered in Route 53 with a hosted zone
 
 ### 1 — Provision AWS infrastructure
 
