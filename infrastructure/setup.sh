@@ -16,10 +16,21 @@ set -e
 echo "=== CloudMart Infrastructure Setup ==="
 
 REGION="us-east-1"
+DOMAIN="tulunad.click"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 CLUSTER_NAME="cloudmart-production"
-HOSTED_ZONE_ID="Z02626052FJ4KVMZOIHJ6"
 ELB_ZONE="Z35SXDOTRQ7X7K"
+
+# Look up hosted zone ID dynamically from domain name — never hardcode
+HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+  --dns-name "$DOMAIN" --query "HostedZones[0].Id" --output text | cut -d'/' -f3)
+
+if [ -z "$HOSTED_ZONE_ID" ] || [ "$HOSTED_ZONE_ID" = "None" ]; then
+  echo "ERROR: No Route53 hosted zone found for $DOMAIN."
+  echo "Run: ./create-hosted-zone.sh"
+  exit 1
+fi
+echo "Hosted Zone ID: $HOSTED_ZONE_ID"
 
 # ── Pre-flight: verify required AWS Secrets exist ─────────────────────────────
 echo "Verifying required AWS Secrets Manager entries..."
@@ -88,6 +99,14 @@ kubectl apply -f monitoring/alert-rules.yaml
 echo "Installing Loki..."
 helm upgrade --install loki grafana/loki -n monitoring \
   -f monitoring/loki-values.yaml
+
+echo "Installing Promtail..."
+helm upgrade --install promtail grafana/promtail -n monitoring \
+  --set "config.clients[0].url=http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push" \
+  --set resources.requests.memory=64Mi \
+  --set resources.requests.cpu=50m \
+  --set resources.limits.memory=128Mi \
+  --set resources.limits.cpu=100m
 
 # ── Kyverno ───────────────────────────────────────────────────────────────────
 echo "Installing Kyverno..."
@@ -215,10 +234,19 @@ kubectl rollout status deployment external-secrets-webhook -n cloudmart --timeou
 kubectl rollout status deployment external-secrets-cert-controller -n cloudmart --timeout=60s
 
 # ── cert-manager resources ────────────────────────────────────────────────────
+echo "Cleaning up stale cert-manager resources..."
+# Remove finalizers from stuck challenges (they block deletion when old hosted zone is gone)
+for challenge in $(kubectl get challenges -n cloudmart -o name 2>/dev/null); do
+  kubectl patch $challenge -n cloudmart -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null
+done
+kubectl delete challenges -n cloudmart --all --ignore-not-found 2>/dev/null
+kubectl delete certificaterequest -n cloudmart --all --ignore-not-found 2>/dev/null
+kubectl delete certificate tulunad-click-tls -n cloudmart --ignore-not-found 2>/dev/null
+
 echo "Applying ClusterIssuer and Certificate..."
-kubectl apply -f cert-manager/cluster-issuer.yaml
+sed "s/__HOSTED_ZONE_ID__/$HOSTED_ZONE_ID/g" cert-manager/cluster-issuer.yaml | kubectl apply -f -
 kubectl wait --for=condition=Ready clusterissuer/letsencrypt-prod --timeout=60s
-kubectl apply -f cert-manager/certificate.yaml
+kubectl apply -f cert-manager/certificate.yaml -n cloudmart
 
 # ── Kafka cluster ──────────────────────────────────────────────────────────────
 echo "Waiting for Strimzi operator and CRDs to be ready..."
@@ -248,10 +276,10 @@ aws route53 change-resource-record-sets \
   --hosted-zone-id $HOSTED_ZONE_ID \
   --change-batch "{
     \"Changes\": [
-      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
-      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"argocd.tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
-      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"grafana.tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
-      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"traefik.tulunad.click\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}}
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"$DOMAIN\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"argocd.$DOMAIN\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"grafana.$DOMAIN\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}},
+      {\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"traefik.$DOMAIN\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$ELB_ZONE\",\"DNSName\":\"$LB\",\"EvaluateTargetHealth\":false}}}
     ]
   }"
 
@@ -290,17 +318,17 @@ kubectl exec -n cloudmart "$PRODUCT_POD" -- python seed.py
 echo ""
 echo "=== Setup Complete ==="
 echo ""
-echo "ArgoCD:  https://argocd.tulunad.click"
+echo "ArgoCD:  https://argocd.$DOMAIN"
 echo "  user:  admin"
 echo "  pass:  $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
 echo ""
-echo "Grafana: https://grafana.tulunad.click"
+echo "Grafana: https://grafana.$DOMAIN"
 echo "  user:  admin"
 echo "  pass:  cloudmart123"
 echo ""
-echo "App:     https://tulunad.click"
+echo "App:     https://$DOMAIN"
 echo ""
-echo "Traefik: https://traefik.tulunad.click"
+echo "Traefik: https://traefik.$DOMAIN"
 echo ""
 echo "NOTE: TLS cert takes ~5 min to issue (DNS-01 challenge via Route53)."
 echo "NOTE: ArgoCD will sync and deploy all app services automatically."

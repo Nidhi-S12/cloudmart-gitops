@@ -20,7 +20,13 @@ loki:
 singleBinary:
   replicas: 1
   persistence:
-    storageClass: gp2
+    enabled: false
+  extraVolumes:
+    - name: loki-data
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: loki-data
+      mountPath: /var/loki
   resources:
     requests:
       memory: 128Mi
@@ -37,16 +43,10 @@ write:
 backend:
   replicas: 0
 
-# Promtail ships logs from pods to Loki
+# Promtail is installed as a separate chart (grafana/promtail)
+# Newer Loki chart versions don't bundle it
 promtail:
-  enabled: true
-  resources:
-    requests:
-      memory: 64Mi
-      cpu: 50m
-    limits:
-      memory: 128Mi
-      cpu: 100m
+  enabled: false
 
 chunksCache:
   enabled: false
