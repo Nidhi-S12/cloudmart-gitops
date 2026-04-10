@@ -27,7 +27,7 @@ images:
   newTag: sha-c9c10cd
 - name: cloudmart/order-service
   newName: ghcr.io/nidhi-s12/cloudmart/order-service
-  newTag: sha-424e529
+  newTag: sha-fe7f1bc
 - name: cloudmart/product-service
   newName: ghcr.io/nidhi-s12/cloudmart/product-service
   newTag: sha-5e42ef4
