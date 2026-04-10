@@ -244,6 +244,7 @@ flowchart TD
 | **ArgoCD** | argocd | GitOps engine — watches this repo, applies changes to cluster |
 | **Prometheus + Grafana** | monitoring | Metrics collection and dashboards |
 | **Loki** | monitoring | Log aggregation — all pod logs queryable from Grafana |
+| **Promtail** | monitoring | DaemonSet log shipper — collects pod logs, ships to Loki |
 | **Kyverno** | kyverno | Policy enforcement — no latest tags, no root containers |
 | **cert-manager** | cert-manager | Auto-provisions and renews Let's Encrypt TLS certificates |
 | **External Secrets Operator** | cloudmart | Syncs secrets from AWS Secrets Manager into K8s Secrets |
@@ -333,7 +334,8 @@ cloudmart-gitops/
 ├── argocd/apps/
 │   └── services/cloudmart-production.yaml
 └── infrastructure/
-    ├── setup.sh                    # Full cluster bootstrap script
+    ├── setup.sh                    # Full cluster bootstrap — dynamic zone lookup, idempotent
+    ├── create-hosted-zone.sh       # Creates Route53 zone + updates domain nameservers
     ├── cert-manager/
     ├── traefik/values.yaml
     ├── kafka/values.yaml
@@ -347,7 +349,7 @@ cloudmart-gitops/
 
 ### Prerequisites
 - AWS CLI configured, Terraform ≥ 1.5, kubectl, helm, kustomize
-- Domain registered in Route 53 with a hosted zone
+- Domain registered in Route 53
 
 ### 1 — Provision AWS infrastructure
 
@@ -364,30 +366,50 @@ terraform apply
 aws eks update-kubeconfig --region us-east-1 --name cloudmart-production
 ```
 
-### 3 — Create secrets in AWS Secrets Manager
+### 3 — Create the Route 53 hosted zone
+
+Terraform does not manage the hosted zone (it outlives the cluster). If this is a fresh setup or you've previously run `terraform destroy`, the hosted zone may not exist.
+
+```bash
+cd infrastructure/
+./create-hosted-zone.sh
+```
+
+This script:
+- Creates a hosted zone if one doesn't exist for the domain
+- Compares nameservers with the domain registrar and updates them if they differ
+- Is idempotent — safe to run multiple times
+
+### 4 — Create secrets in AWS Secrets Manager
+
+Secrets are **not** managed by Terraform or setup.sh — they must exist before the cluster can deploy apps. ESO (External Secrets Operator) syncs them into Kubernetes, but it can't create what doesn't exist in AWS.
 
 ```bash
 # Use RDS and ElastiCache endpoints from: terraform output
 
 aws secretsmanager create-secret --name cloudmart/product-service --region us-east-1 \
-  --secret-string '{"database-url":"postgresql+asyncpg://cloudmart:<password>@<rds-endpoint>:5432/cloudmart"}'
+  --secret-string '{"database-url":"postgresql+asyncpg://cloudmart_admin:<password>@<rds-endpoint>:5432/cloudmart?ssl=require"}'
 
 aws secretsmanager create-secret --name cloudmart/order-service --region us-east-1 \
-  --secret-string '{"redis-host":"<elasticache-endpoint>","kafka-brokers":"cloudmart-kafka-kafka-bootstrap.cloudmart.svc.cluster.local:9092"}'
+  --secret-string '{"redis-host":"<elasticache-endpoint>","kafka-brokers":"kafka-kafka-bootstrap.cloudmart.svc.cluster.local:9092"}'
 
 aws secretsmanager create-secret --name cloudmart/ghcr-pull --region us-east-1 \
-  --secret-string '{"ghcr-token":"<github-pat>"}'
+  --secret-string '{"username":"<github-username>","password":"<github-pat>"}'
 
 aws secretsmanager create-secret --name cloudmart/google-oauth --region us-east-1 \
   --secret-string '{"client-id":"<id>","client-secret":"<secret>","nextauth-secret":"<random-32-chars>"}'
 ```
 
-### 4 — Bootstrap the cluster
+> **Note:** The RDS master username is `cloudmart_admin` (set in Terraform), not `cloudmart`. The connection string must include `?ssl=require` for RDS. The Kafka broker name inside the cluster is `kafka-kafka-bootstrap` (not `cloudmart-kafka-kafka-bootstrap`).
+
+### 5 — Bootstrap the cluster
 
 ```bash
 cd infrastructure/
 ./setup.sh
 ```
+
+`setup.sh` dynamically looks up the hosted zone ID from Route 53 — no hardcoded IDs. It installs all platform components, cleans up stale cert-manager challenges from previous runs, creates DNS records, and seeds the database.
 
 ### Tear Down
 
@@ -400,6 +422,8 @@ for secret in cloudmart/product-service cloudmart/order-service cloudmart/ghcr-p
   aws secretsmanager delete-secret --secret-id $secret --region us-east-1 --force-delete-without-recovery
 done
 ```
+
+> **Note:** `terraform destroy` does **not** delete the Route 53 hosted zone (it's created separately). This is intentional — the zone and its nameserver delegation survive teardowns so you don't have to wait for DNS propagation on every rebuild.
 
 ---
 
