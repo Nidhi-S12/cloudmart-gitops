@@ -152,6 +152,7 @@ flowchart TD
 
     subgraph CI["GitHub Actions CI"]
         Scans["Security Scans\nGitleaks · Semgrep · Trivy"]:::sec
+        Tests["Unit Tests\nJest / pytest"]:::build
         Build["docker build\nmulti-stage"]:::build
         Publish["push image\ntagged with git SHA"]:::build
         ImageScan["Trivy image scan"]:::sec
@@ -162,7 +163,7 @@ flowchart TD
     K8s["Kubernetes\nrolling update — zero downtime"]:::k8s
 
     Push --> Scans
-    Scans -->|all pass| Build --> Publish --> ImageScan --> Update
+    Scans -->|all pass| Tests -->|all pass| Build --> Publish --> ImageScan --> Update
     Update -->|git push| ArgoCD
     ArgoCD -->|kubectl apply| K8s
 ```
