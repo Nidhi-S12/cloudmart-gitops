@@ -69,3 +69,15 @@ module "s3" {
   project_name = var.project_name
   environment  = var.environment
 }
+
+# -------------------------------------------------------
+# Alerting — SNS topic + email subscription
+# AlertManager publishes alerts here via IRSA (role created in setup.sh)
+# -------------------------------------------------------
+module "alerting" {
+  source = "../../modules/alerting"
+
+  project_name = var.project_name
+  environment  = var.environment
+  alert_email  = var.alert_email
+}

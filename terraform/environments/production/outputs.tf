@@ -30,3 +30,8 @@ output "oidc_provider_arn" {
   description = "OIDC provider ARN — needed when creating IRSA roles for pods"
   value       = module.eks.oidc_provider_arn
 }
+
+output "sns_alerts_topic_arn" {
+  description = "SNS topic ARN for AlertManager → email notifications"
+  value       = module.alerting.sns_topic_arn
+}

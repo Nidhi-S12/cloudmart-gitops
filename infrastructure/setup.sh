@@ -32,6 +32,20 @@ if [ -z "$HOSTED_ZONE_ID" ] || [ "$HOSTED_ZONE_ID" = "None" ]; then
 fi
 echo "Hosted Zone ID: $HOSTED_ZONE_ID"
 
+# ── Look up EKS OIDC provider (used by every IRSA role below) ─────────────────
+OIDC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
+  --query "cluster.identity.oidc.issuer" --output text | cut -d'/' -f5)
+
+# ── Look up SNS topic ARN (AlertManager publishes alerts here) ────────────────
+SNS_TOPIC_ARN=$(aws sns list-topics --region $REGION \
+  --query "Topics[?contains(TopicArn, ':cloudmart-production-alerts')].TopicArn | [0]" --output text)
+
+if [ -z "$SNS_TOPIC_ARN" ] || [ "$SNS_TOPIC_ARN" = "None" ]; then
+  echo "ERROR: SNS alerts topic not found. Did you run 'terraform apply'?"
+  exit 1
+fi
+echo "SNS Alerts Topic: $SNS_TOPIC_ARN"
+
 # ── Pre-flight: verify required AWS Secrets exist ─────────────────────────────
 echo "Verifying required AWS Secrets Manager entries..."
 for secret in cloudmart/product-service cloudmart/order-service cloudmart/ghcr-pull; do
@@ -87,10 +101,62 @@ helm upgrade --install argocd argo/argo-cd -n argocd \
   --set server.service.type=ClusterIP \
   --disable-openapi-validation
 
+# ── IRSA: AlertManager → SNS (publish alerts to email via SNS) ────────────────
+echo "Setting up IRSA for AlertManager..."
+AM_TRUST_POLICY=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}:sub": "system:serviceaccount:monitoring:alertmanager",
+        "oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}
+EOF
+)
+aws iam update-assume-role-policy \
+  --role-name cloudmart-alertmanager-sns \
+  --policy-document "$AM_TRUST_POLICY" 2>/dev/null || \
+aws iam create-role \
+  --role-name cloudmart-alertmanager-sns \
+  --assume-role-policy-document "$AM_TRUST_POLICY"
+
+aws iam put-role-policy \
+  --role-name cloudmart-alertmanager-sns \
+  --policy-name SNSPublish \
+  --policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Effect\": \"Allow\",
+      \"Action\": \"sns:Publish\",
+      \"Resource\": \"${SNS_TOPIC_ARN}\"
+    }]
+  }"
+
+AM_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/cloudmart-alertmanager-sns"
+
 # ── Prometheus + Grafana ──────────────────────────────────────────────────────
+echo "Rendering Prometheus values file with SNS ARN + role ARN..."
+# Escape forward slashes in ARNs for sed
+RENDERED_VALUES=$(mktemp)
+sed -e "s|__SNS_TOPIC_ARN__|${SNS_TOPIC_ARN}|g" \
+    -e "s|__AWS_REGION__|${REGION}|g" \
+    -e "s|__ALERTMANAGER_ROLE_ARN__|${AM_ROLE_ARN}|g" \
+    monitoring/prometheus-values.yaml > "$RENDERED_VALUES"
+
 echo "Installing Prometheus + Grafana..."
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  -n monitoring -f monitoring/prometheus-values.yaml
+  -n monitoring -f "$RENDERED_VALUES"
+
+rm -f "$RENDERED_VALUES"
 
 echo "Applying CloudMart alert rules..."
 kubectl apply -f monitoring/alert-rules.yaml
@@ -123,8 +189,6 @@ helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager \
 
 # ── IRSA: cert-manager → Route 53 ────────────────────────────────────────────
 echo "Setting up IRSA for cert-manager..."
-OIDC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION \
-  --query "cluster.identity.oidc.issuer" --output text | cut -d'/' -f5)
 
 # Create/update trust policy (idempotent)
 TRUST_POLICY=$(cat <<EOF
@@ -333,4 +397,6 @@ echo ""
 echo "NOTE: TLS cert takes ~5 min to issue (DNS-01 challenge via Route53)."
 echo "NOTE: ArgoCD will sync and deploy all app services automatically."
 echo "NOTE: Kafka takes ~3 min. order-service will restart until it's ready — this is normal."
+echo "NOTE: Alert emails go to the address in terraform var 'alert_email'."
+echo "      On first setup, AWS sends a confirmation email — click the link to activate."
 echo "NOTE: AWS Secrets Manager → ESO will sync secrets into the cluster automatically."

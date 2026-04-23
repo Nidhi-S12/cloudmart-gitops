@@ -59,3 +59,10 @@ variable "db_password" {
   type        = string
   sensitive   = true
 }
+
+# Alerting
+variable "alert_email" {
+  description = "Email address that receives AlertManager notifications via SNS"
+  type        = string
+  default     = "nidhisnrao@gmail.com"
+}

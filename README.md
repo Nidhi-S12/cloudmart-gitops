@@ -301,6 +301,28 @@ Scale-down has a 5-minute stabilisation window to avoid flapping.
 | `KafkaUnderReplicatedPartitions` | Kafka partition has fewer replicas than expected |
 | `KafkaConsumerGroupLag` | Consumer group is falling behind |
 
+### Alert Delivery — SNS → Email
+
+```mermaid
+flowchart LR
+    classDef k8s fill:#326CE5,stroke:#1a3a8f,color:#fff
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#fff
+    classDef user fill:#F59E0B,stroke:#92400e,color:#fff
+
+    Prom["Prometheus\nrule evaluation"]:::k8s
+    AM["AlertManager\nrouting + grouping"]:::k8s
+    SNS["SNS Topic\ncloudmart-production-alerts"]:::aws
+    Email["Email subscriber"]:::user
+
+    Prom -->|alert fires| AM
+    AM -->|sns:Publish via IRSA| SNS
+    SNS -->|SMTP fan-out| Email
+```
+
+AlertManager authenticates to SNS using **IRSA** — its ServiceAccount assumes the `cloudmart-alertmanager-sns` IAM role (scoped to `sns:Publish` on a single topic). No static AWS credentials anywhere.
+
+On first deploy, AWS sends a confirmation email to the subscriber address; click the link to activate delivery. The email address is set via the `alert_email` Terraform variable (default: `nidhisnrao@gmail.com`).
+
 ---
 
 ## Repo Structure
@@ -318,6 +340,7 @@ cloudmart-gitops/
 │       ├── eks/                    # EKS cluster + managed node group
 │       ├── rds/                    # PostgreSQL (private subnet)
 │       ├── elasticache/            # Redis (private subnet)
+│       ├── alerting/               # SNS topic + email subscription for AlertManager
 │       └── s3/
 ├── base/                           # K8s manifests — environment-agnostic
 │   ├── frontend/                   # Deployment, Service, HPA

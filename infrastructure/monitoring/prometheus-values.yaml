@@ -36,6 +36,40 @@ prometheus:
     storageSpec: {}
 
 alertmanager:
+  # Route all alerts through SNS → email
+  # __SNS_TOPIC_ARN__ and __AWS_REGION__ are substituted by setup.sh at apply time
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: email-via-sns
+    receivers:
+      - name: email-via-sns
+        sns_configs:
+          - topic_arn: __SNS_TOPIC_ARN__
+            sigv4:
+              region: __AWS_REGION__
+            subject: '[CloudMart] {{ .CommonLabels.alertname }} ({{ .Status }})'
+            message: |
+              {{ range .Alerts }}
+              Alert:       {{ .Labels.alertname }}
+              Severity:    {{ .Labels.severity }}
+              Namespace:   {{ .Labels.namespace }}
+              Pod:         {{ .Labels.pod }}
+              Description: {{ .Annotations.description }}
+              Summary:     {{ .Annotations.summary }}
+              Started:     {{ .StartsAt }}
+              {{ end }}
+  # IRSA — AlertManager ServiceAccount needs sns:Publish
+  serviceAccount:
+    create: true
+    name: alertmanager
+    annotations:
+      eks.amazonaws.com/role-arn: __ALERTMANAGER_ROLE_ARN__
   alertmanagerSpec:
     resources:
       requests:
