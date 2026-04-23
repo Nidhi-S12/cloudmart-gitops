@@ -30,7 +30,7 @@ images:
   newTag: sha-ef18e54
 - name: cloudmart/product-service
   newName: ghcr.io/nidhi-s12/cloudmart/product-service
-  newTag: sha-5e42ef4
+  newTag: sha-ef18e54
 
 patches:
 - path: patches/frontend-env.yaml
